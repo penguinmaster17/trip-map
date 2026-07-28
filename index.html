@@ -1,0 +1,992 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trip Map</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #16181d;
+    --muted: #6b7280;
+    --line: #e3e6ea;
+    --panel: #f7f8fa;
+    --accent: #2563eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #e8eaed; --muted: #9aa1ab;
+      --line: #2a2e35; --panel: #1a1d22; --accent: #60a5fa;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+    color: var(--fg); background: var(--bg);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); flex: none;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+  header .stats { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  header .spacer { flex: 1; }
+  button {
+    font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button.danger:hover { border-color: #dc2626; color: #dc2626; }
+  header .stats b { font-weight: 600; color: var(--fg); }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  #side {
+    width: 320px; flex: none; border-right: 1px solid var(--line);
+    overflow-y: auto; background: var(--panel);
+  }
+  #map { flex: 1; min-width: 0; background: var(--panel); }
+
+  /* ---- drop zone ---- */
+  #intro {
+    position: absolute; inset: 0; z-index: 1200;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg); padding: 24px;
+  }
+  #intro.hidden { display: none; }
+  #drop {
+    border: 2px dashed var(--line); border-radius: 14px; padding: 56px 40px;
+    text-align: center; cursor: pointer; max-width: 520px; transition: .15s;
+  }
+  #drop:hover, #drop.hot { border-color: var(--accent); background: var(--panel); }
+  #drop h2 { margin: 0 0 8px; font-size: 19px; }
+  #drop p { margin: 0; color: var(--muted); font-size: 13px; }
+  #drop .note { margin-top: 18px; font-size: 12px; opacity: .75; }
+
+  /* ---- sidebar ---- */
+  .trip { border-bottom: 1px solid var(--line); }
+  .trip-head {
+    display: flex; align-items: center; gap: 9px; padding: 11px 14px;
+    cursor: pointer; user-select: none;
+  }
+  .trip-head:hover { background: rgba(127,127,127,.07); }
+  .swatch { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .trip-title { font-weight: 600; flex: 1; min-width: 0; }
+  .trip-title small { display: block; font-weight: 400; color: var(--muted); font-size: 11.5px; }
+  .caret { color: var(--muted); font-size: 11px; transition: transform .15s; }
+  .trip.open .caret { transform: rotate(90deg); }
+  .trip-body { display: none; padding: 0 0 8px; }
+  .trip.open .trip-body { display: block; }
+
+  .day { margin: 0 10px 6px; }
+  .day-head {
+    font-size: 12px; font-weight: 600; color: var(--muted);
+    padding: 5px 6px; cursor: pointer; border-radius: 5px;
+    display: flex; justify-content: space-between;
+  }
+  .day-head:hover { background: rgba(127,127,127,.1); color: var(--fg); }
+  .shot {
+    display: flex; gap: 8px; align-items: baseline;
+    padding: 4px 10px; margin-left: 6px; font-size: 12.5px;
+    cursor: pointer; border-radius: 5px; border-left: 2px solid var(--line);
+  }
+  .shot:hover { background: rgba(127,127,127,.1); border-left-color: var(--accent); }
+  .shot .t { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
+  .shot .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  #unplaced .trip-head { cursor: default; }
+  #unplaced .trip-head:hover { background: none; }
+  .up-item { padding: 3px 14px 3px 33px; font-size: 12.5px; color: var(--muted); }
+
+  .marker-num {
+    background: var(--accent); color: #fff; border: 2px solid #fff;
+    border-radius: 50%; width: 22px; height: 22px;
+    font: 600 10px/18px ui-sans-serif, sans-serif; text-align: center;
+    box-shadow: 0 1px 4px rgba(0,0,0,.4);
+  }
+  .cluster {
+    color: #fff; border: 2px solid rgba(255,255,255,.9); border-radius: 50%;
+    text-align: center; font-weight: 600; font-variant-numeric: tabular-nums;
+    background: #3b475c; box-shadow: 0 2px 6px rgba(0,0,0,.35);
+  }
+  .marker-cluster { background: none; }   /* drop the plugin's default styling */
+  .leaflet-popup-content { margin: 10px 12px; font: 13px/1.45 ui-sans-serif, sans-serif; }
+  .leaflet-popup-content b { display: block; margin-bottom: 3px; }
+  .leaflet-popup-content span { color: #666; font-size: 12px; }
+
+  .empty { padding: 30px 16px; color: var(--muted); text-align: center; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Trip Map</h1>
+  <span class="stats" id="stats"></span>
+  <span class="spacer"></span>
+  <button id="reset" hidden>Add photos</button>
+  <button id="export" hidden>Export</button>
+  <button id="importBtn" hidden>Import</button>
+  <button id="clear" hidden class="danger">Clear</button>
+  <input type="file" id="jsonPicker" accept="application/json,.json" hidden>
+</header>
+
+<main>
+  <div id="side"><div class="empty">No photos loaded.</div></div>
+  <div id="map"></div>
+</main>
+
+<div id="intro">
+  <div id="drop">
+    <h2>Drag a folder of photos here</h2>
+    <p>Reads GPS and timestamps, plots your route, groups it by day.</p>
+    <p class="note">
+      Photos are added to your existing library, never replacing it. Everything
+      runs in this tab — no upload, no server, nothing leaves your machine.
+    </p>
+    <input type="file" id="picker" webkitdirectory directory multiple hidden>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
+<script src="cities.js"></script>
+<script>
+/* ============================================================
+   Trip Map — client-side EXIF → map + timeline
+   Splits a mixed photo library into separate trips using
+   time gaps and geographic jumps.
+   ============================================================ */
+
+const IMAGE_RE  = /\.(hei[cf]|jpe?g|png|tiff?|dng|webp|avif)$/i;
+// Distance is the reliable signal for "this is a different trip"; time alone is
+// not. A 20h overnight gap in one city is just sleep, so time only splits a trip
+// after a gap long enough that you were plainly doing something else.
+const GAP_HOURS = 48;    // silence this long => treat as a separate trip
+const JUMP_KM   = 300;   // moved this far => separate trip regardless of time
+
+const PALETTE = ['#2563eb','#dc2626','#059669','#d97706','#7c3aed',
+                 '#0891b2','#db2777','#65a30d','#ea580c','#4f46e5'];
+
+// Place names come from cities.js — 49,025 settlements of 5,000 people or more,
+// loaded as one newline-delimited string and indexed by whole degree of latitude
+// on first use. Scanning all 49k entries per lookup would work, but bucketing
+// means a lookup only compares against the handful of cities in neighbouring
+// latitude bands.
+const MATCH_RADIUS_KM = 30;
+
+let cityIndex = null;
+
+function buildCityIndex() {
+  const index = new Map();
+  if (typeof window.CITY_DATA !== 'string') return index;   // cities.js absent
+  for (const line of window.CITY_DATA.split('\n')) {
+    const a = line.indexOf('|');
+    const b = line.indexOf('|', a + 1);
+    if (a < 0 || b < 0) continue;
+    const lat = +line.slice(0, a), lon = +line.slice(a + 1, b);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const key = Math.floor(lat);
+    let bucket = index.get(key);
+    if (!bucket) index.set(key, bucket = []);
+    bucket.push([lat, lon, line.slice(b + 1)]);
+  }
+  return index;
+}
+
+/* ---------- geo helpers ---------- */
+
+function haversineKm(a, b, c, d) {
+  const R = 6371, rad = Math.PI / 180;
+  const dLat = (c - a) * rad, dLon = (d - b) * rad;
+  const s = Math.sin(dLat/2)**2 +
+            Math.cos(a*rad) * Math.cos(c*rad) * Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+function nearestCity(lat, lon) {
+  if (!cityIndex) cityIndex = buildCityIndex();
+
+  let best = null, bestD = Infinity;
+  const key = Math.floor(lat);
+  // A degree of latitude is ~111 km, so the 30 km radius can only ever reach
+  // into the neighbouring bands.
+  for (let k = key - 1; k <= key + 1; k++) {
+    const bucket = cityIndex.get(k);
+    if (!bucket) continue;
+    for (const [cLat, cLon, name] of bucket) {
+      const d = haversineKm(lat, lon, cLat, cLon);
+      if (d < bestD) { bestD = d; best = name; }
+    }
+  }
+  // Naming somewhere 100 km away is worse than saying nothing — falling back to
+  // coordinates is honest, whereas calling Girona "Barcelona" is just wrong.
+  return bestD <= MATCH_RADIUS_KM ? best : `${lat.toFixed(2)}, ${lon.toFixed(2)}`;
+}
+
+/* ---------- date helpers ---------- */
+
+const pad = n => String(n).padStart(2, '0');
+const dayKey  = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+const clock   = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const longDay = d => d.toLocaleDateString(undefined,
+  { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+
+function rangeLabel(a, b) {
+  const o = { month: 'short', day: 'numeric' };
+  const sameYear = a.getFullYear() === b.getFullYear();
+  const s = a.toLocaleDateString(undefined, o);
+  const e = b.toLocaleDateString(undefined, o);
+  const yr = sameYear ? ` ${a.getFullYear()}` : '';
+  return (s === e ? s : `${s} – ${e}`) + yr;
+}
+
+/* ---------- state ---------- */
+
+let map, cluster = null, layers = [], photos = [], trips = [], unplaced = [];
+const markerIndex = new Map();
+
+/* ---------- input ---------- */
+
+const intro  = document.getElementById('intro');
+const drop   = document.getElementById('drop');
+const picker = document.getElementById('picker');
+const side   = document.getElementById('side');
+const statsEl= document.getElementById('stats');
+const resetBt= document.getElementById('reset');
+
+drop.addEventListener('click', () => { if (!busy) picker.click(); });
+picker.addEventListener('change', async e => {
+  if (busy) return;
+  busy = true;
+  skipped = 0;
+  try { await ingest([...e.target.files]); } finally { busy = false; }
+});
+resetBt.addEventListener('click', () => { intro.classList.remove('hidden'); });
+
+/* ---------- library controls ---------- */
+
+const exportBt = document.getElementById('export');
+const importBt = document.getElementById('importBtn');
+const clearBt  = document.getElementById('clear');
+const jsonPicker = document.getElementById('jsonPicker');
+
+exportBt.addEventListener('click', async () => {
+  const recs = (await loadLibrary()).map(r => ({ ...r, when: r.when ? +r.when : null }));
+  const blob = new Blob([JSON.stringify({
+    format: 'trip-map/v1',
+    exported: new Date().toISOString(),
+    count: recs.length,
+    photos: recs
+  }, null, 1)], { type: 'application/json' });
+
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `trip-map-library-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+});
+
+importBt.addEventListener('click', () => jsonPicker.click());
+
+jsonPicker.addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    const parsed = JSON.parse(await file.text());
+    const incoming = Array.isArray(parsed) ? parsed : parsed.photos;
+    if (!Array.isArray(incoming)) throw new Error('no photo list in that file');
+
+    // Trust nothing from a file on disk — rebuild each record rather than
+    // storing whatever shape happened to be in there.
+    const records = incoming
+      .filter(r => r && typeof r.name === 'string')
+      .map(r => ({
+        id: r.id || `${r.name}|${r.size ?? 0}|${r.when ?? 0}`,
+        name: r.name,
+        size: Number(r.size) || 0,
+        lat: Number.isFinite(r.lat) ? r.lat : null,
+        lon: Number.isFinite(r.lon) ? r.lon : null,
+        when: Number.isFinite(r.when) ? r.when : null,
+        addedAt: Number.isFinite(r.addedAt) ? r.addedAt : Date.now()
+      }));
+
+    lastImport = await mergeIntoLibrary(records);
+    intro.classList.add('hidden');
+    await rebuildFromLibrary();
+  } catch (err) {
+    console.error(err);
+    alert("That file couldn't be read as a Trip Map library.\n\n" + err.message);
+  } finally {
+    jsonPicker.value = '';
+  }
+});
+
+clearBt.addEventListener('click', async () => {
+  const n = photos.length + unplaced.length;
+  if (!confirm(`Delete all ${n.toLocaleString()} photos from your library?\n\n` +
+               `This only clears this browser's stored coordinates — your actual ` +
+               `photo files are untouched. Export first if you want a copy.`)) return;
+  await clearLibrary();
+  photos = []; unplaced = []; trips = []; lastImport = null;
+  build();
+  intro.classList.remove('hidden');
+});
+
+['dragenter','dragover'].forEach(t =>
+  drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('hot'); }));
+['dragleave','drop'].forEach(t =>
+  drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('hot'); }));
+
+let busy = false;
+let skipped = 0;   // non-photo files passed over, reported in the header
+
+drop.addEventListener('drop', async e => {
+  e.preventDefault();
+  if (busy) return;
+
+  // webkitGetAsEntry must be called synchronously — the moment this handler
+  // awaits anything, the browser clears dataTransfer and the items are gone.
+  const entries = [...e.dataTransfer.items]
+    .map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+  const loose = [...e.dataTransfer.files];
+
+  busy = true;
+  skipped = 0;
+  const h2 = drop.querySelector('h2');
+  try {
+    let files;
+    if (entries.length) {
+      h2.textContent = 'Reading folder…';
+      const found = [];
+      for (const en of entries) await collectEntries(en, found, h2);
+      h2.textContent = `Opening ${found.length} photos…`;
+      files = await resolveFiles(found);
+    } else {
+      files = loose;
+    }
+    await ingest(files);
+  } catch (err) {
+    console.error(err);
+    h2.textContent = 'Could not read that folder — try the picker instead';
+  } finally {
+    busy = false;
+  }
+});
+
+/* A directory reader hands back entries in batches and signals the end with an
+   empty batch, so it has to be drained in a loop. Two rules make the difference
+   between this working and hanging forever:
+
+   1. Drain one reader completely before recursing into any child directory.
+      Interleaving other async work between readEntries calls on the same reader
+      makes Chrome stop calling back.
+   2. Never let a callback-based API reject into the void. A single unreadable
+      file — a cloud placeholder Dropbox hasn't materialised, something locked by
+      another process — used to reject and strand the whole import at "Reading
+      folder…", which is exactly the hang you hit. Every call below resolves to a
+      harmless value on error and is capped by a timeout.
+
+   Filtering to image extensions here, before opening anything, also means we
+   never touch .DS_Store, sidecars, or the rest of the folder's clutter. */
+
+const CALLBACK_TIMEOUT = 15000;
+
+function once(fn, fallback) {
+  return new Promise(resolve => {
+    let settled = false, timer = null;
+    const finish = v => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);   // otherwise every file leaves a live
+      resolve(v);                       // 15s timer behind — 10k of them at once
+    };
+    try { fn(finish, () => finish(fallback)); } catch (_) { finish(fallback); }
+    if (!settled) timer = setTimeout(() => finish(fallback), CALLBACK_TIMEOUT);
+  });
+}
+
+async function collectEntries(entry, out, h2) {
+  if (entry.isFile) {
+    // Judged on the name alone. A 4 GB .MOV sitting next to the photos is
+    // rejected here and never opened, so it costs one regex test, not a read.
+    if (IMAGE_RE.test(entry.name) && !entry.name.startsWith('.')) out.push(entry);
+    else skipped++;
+    return;
+  }
+  if (!entry.isDirectory) return;
+
+  const reader = entry.createReader();
+  const children = [];
+  while (true) {
+    const batch = await once(cb => reader.readEntries(cb), []);
+    if (!batch.length) break;
+    children.push(...batch);
+  }
+  for (const child of children) {
+    await collectEntries(child, out, h2);
+    if (h2 && out.length && out.length % 25 === 0) {
+      h2.textContent = `Found ${out.length} photos…`;
+    }
+  }
+}
+
+async function resolveFiles(entries) {
+  const files = [];
+  let next = 0;
+  await Promise.all(Array.from({ length: 8 }, async () => {
+    while (next < entries.length) {
+      const f = await once(cb => entries[next++].file(cb), null);
+      if (f) files.push(f);
+    }
+  }));
+  return files;
+}
+
+/* ---------- parse ---------- */
+
+// GPSLatitudeRef / GPSLongitudeRef carry the hemisphere (N/S, E/W). Without them
+// exifr cannot sign the coordinate, so a western-hemisphere photo comes back as
+// +122 instead of -122 and lands on the wrong side of the planet. Always pick them.
+const PICK = ['DateTimeOriginal','CreateDate','ModifyDate',
+              'GPSLatitude','GPSLongitude','GPSLatitudeRef','GPSLongitudeRef'];
+
+const PARSE_OPTS = { tiff: true, exif: true, gps: true, reviveValues: true, pick: PICK };
+
+/* exifr 7.1.3 refuses to open some HEICs: its format check bails when the file's
+   `ftyp` box is longer than 50 bytes, and recent iPhones write a 52-byte one
+   (major brand `heic`, nine compatible brands). The EXIF inside is perfectly
+   normal, so when the front door is locked we find the TIFF block ourselves and
+   hand exifr just that slice, which it parses happily.
+
+   The marker is `Exif\0\0` followed immediately by a TIFF header. Checking for
+   that header matters: the literal string "Exif" also appears earlier in the
+   file as an item-type declaration inside the `iinf` box, and slicing there
+   yields garbage. */
+function findTiffOffset(u8) {
+  for (let i = 0, n = u8.length - 14; i < n; i++) {
+    if (u8[i] !== 0x45 || u8[i+1] !== 0x78 || u8[i+2] !== 0x69 ||
+        u8[i+3] !== 0x66 || u8[i+4] !== 0x00 || u8[i+5] !== 0x00) continue;
+    const a = u8[i+6], b = u8[i+7], c = u8[i+8], d = u8[i+9];
+    const bigEndian    = a === 0x4D && b === 0x4D && c === 0x00 && d === 0x2A;
+    const littleEndian = a === 0x49 && b === 0x49 && c === 0x2A && d === 0x00;
+    if (bigEndian || littleEndian) return i + 6;
+  }
+  return -1;
+}
+
+/* Reading the whole file to find the EXIF block is the expensive way to do this.
+   The block sits about 96 KB into a typical iPhone HEIC, so pulling the entire
+   3.8 MB is roughly 7x the I/O needed — across ten thousand photos that is ~37 GB
+   read instead of ~2.4 GB, which is what makes a large import crawl once the
+   operating system's file cache stops absorbing it.
+
+   So: confirm the file really is an ISO base-media container first (12 bytes),
+   then read growing prefixes and stop at the first one containing the marker.
+   Only a file that hides its EXIF unusually deep costs a full read. */
+
+const HEIC_PREFIXES = [256 * 1024, 1024 * 1024];
+
+const stats = { fast: 0, fallback: 0, failed: 0, bytes: 0, fastMs: 0, fallbackMs: 0 };
+
+async function looksLikeHeif(file) {
+  if (file.size < 16) return false;
+  const head = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+  stats.bytes += 12;
+  // 'ftyp' at bytes 4–8 marks HEIC / HEIF / AVIF and friends.
+  return head[4] === 0x66 && head[5] === 0x74 && head[6] === 0x79 && head[7] === 0x70;
+}
+
+async function parseStubbornHeic(file) {
+  if (!(await looksLikeHeif(file))) return null;
+
+  const sizes = HEIC_PREFIXES.filter(s => s < file.size);
+  sizes.push(file.size);
+
+  for (const size of sizes) {
+    const buf = await file.slice(0, size).arrayBuffer();
+    stats.bytes += buf.byteLength;
+    const off = findTiffOffset(new Uint8Array(buf));
+    if (off >= 0) return exifr.parse(buf.slice(off), PARSE_OPTS);
+  }
+  return null;
+}
+
+/* Cameras without a GPS receiver — your Canon EOS 650D among them — don't omit
+   the GPS tags, they write them as zeros. exifr reports that honestly as
+   latitude 0, longitude 0, which is a real point in the Gulf of Guinea, so a
+   naive null check sails those photos off the coast of Africa. Exact 0/0 is
+   never a genuine holiday snap; treat it, and anything out of range or NaN, as
+   no fix at all. */
+function hasFix(p) {
+  return Number.isFinite(p.lat) && Number.isFinite(p.lon) &&
+         !(p.lat === 0 && p.lon === 0) &&
+         Math.abs(p.lat) <= 90 && Math.abs(p.lon) <= 180;
+}
+
+async function readExif(file) {
+  let lat = null, lon = null, when = null, x = null;
+
+  const t0 = performance.now();
+  try {
+    x = await exifr.parse(file, PARSE_OPTS);
+  } catch (_) { /* format not recognised — the HEIC fallback below may still work */ }
+
+  if (!x || (x.latitude == null && !x.DateTimeOriginal)) {
+    try {
+      const rescued = await parseStubbornHeic(file);
+      if (rescued) x = rescued;
+      stats.fallback++;
+      stats.fallbackMs += performance.now() - t0;
+    } catch (_) { stats.failed++; }
+  } else {
+    stats.fast++;
+    stats.fastMs += performance.now() - t0;
+  }
+
+  if (x) {
+    lat  = x.latitude ?? null;
+    lon  = x.longitude ?? null;
+    when = x.DateTimeOriginal || x.CreateDate || x.ModifyDate || null;
+  }
+
+  // Fall back to file mtime so a photo without EXIF time still orders sensibly.
+  if (!when && file.lastModified) when = new Date(file.lastModified);
+  return { name: file.name, size: file.size, lat, lon, when };
+}
+
+async function ingest(all) {
+  // The drag-and-drop path already filtered by name; this catches the picker,
+  // which hands over the whole folder listing including videos and documents.
+  const files = all.filter(f => IMAGE_RE.test(f.name) && !f.name.startsWith('.'));
+  skipped += all.length - files.length;
+
+  if (!files.length) {
+    drop.querySelector('h2').textContent = 'No photos found — try another folder';
+    return;
+  }
+
+  const out = [];
+  let next = 0, done = 0;
+  const h2 = drop.querySelector('h2');
+  Object.keys(stats).forEach(k => stats[k] = 0);
+  const tStart = performance.now();
+
+  await Promise.all(Array.from({ length: 8 }, async () => {
+    while (next < files.length) {
+      out.push(await readExif(files[next++]));
+      if (++done % 5 === 0 || done === files.length) {
+        h2.textContent = `Reading ${done} / ${files.length}…`;
+      }
+    }
+  }));
+
+  // Open the console after a slow import — this says where the time actually went.
+  console.log(
+    `%cimport: ${files.length} photos in ${((performance.now() - tStart)/1000).toFixed(1)}s`,
+    'font-weight:bold',
+    {
+      'fast path':      `${stats.fast} photos, ${(stats.fastMs/(stats.fast||1)).toFixed(1)} ms each`,
+      'HEIC fallback':  `${stats.fallback} photos, ${(stats.fallbackMs/(stats.fallback||1)).toFixed(1)} ms each`,
+      'unreadable':     stats.failed,
+      'bytes read':     `${(stats.bytes/1048576).toFixed(0)} MB`
+    });
+
+  h2.textContent = 'Merging into your library…';
+  lastImport = await mergeIntoLibrary(out.map(toRecord));
+
+  intro.classList.add('hidden');
+  h2.textContent = 'Drag a folder of photos here';
+  await rebuildFromLibrary();
+}
+
+/* ---------- the library ----------
+   Photos accumulate in IndexedDB and survive reloads, so importing a second
+   folder adds to the map rather than replacing it. Nothing is uploaded — this
+   is a database inside the browser, on this machine.
+
+   The identity of a photo is its filename, byte size and capture time. Photos
+   are immutable, so that triple is stable: re-importing a folder you have
+   already added is recognised and skipped rather than duplicated. */
+
+const DB_NAME = 'trip-map', DB_VERSION = 1, STORE = 'photos';
+
+let lastImport = null;
+let libraryAvailable = true;
+
+function openDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function idbRequest(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// Dates don't survive a JSON round trip, so time is stored as epoch milliseconds
+// and revived on the way out. Coordinates are normalised here too, which means
+// a camera's zeroed GPS tags never reach the database in the first place.
+function toRecord(p) {
+  const whenMs = p.when ? +p.when : null;
+  const located = hasFix(p);
+  return {
+    id: `${p.name}|${p.size}|${whenMs ?? 0}`,
+    name: p.name,
+    size: p.size,
+    lat: located ? p.lat : null,
+    lon: located ? p.lon : null,
+    when: whenMs,
+    addedAt: Date.now()
+  };
+}
+
+async function mergeIntoLibrary(records) {
+  // Collapse duplicates inside this batch first — the same photo can appear
+  // twice if a folder contains a copy of itself.
+  const batch = new Map();
+  for (const r of records) if (r.id) batch.set(r.id, r);
+
+  if (!libraryAvailable) return { added: batch.size, known: 0, total: batch.size };
+
+  try {
+    const db = await openDb();
+    const known = new Set(await idbRequest(db.transaction(STORE).objectStore(STORE).getAllKeys()));
+
+    let added = 0, seen = 0;
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readwrite');
+      const store = tx.objectStore(STORE);
+      for (const [id, rec] of batch) {
+        if (known.has(id)) { seen++; continue; }
+        store.put(rec);
+        added++;
+      }
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+
+    const total = await idbRequest(db.transaction(STORE).objectStore(STORE).count());
+    db.close();
+    return { added, known: seen, total };
+  } catch (err) {
+    console.warn('library unavailable, staying in memory for this session:', err);
+    libraryAvailable = false;
+    return { added: batch.size, known: 0, total: batch.size };
+  }
+}
+
+async function loadLibrary() {
+  if (!libraryAvailable) return [];
+  try {
+    const db = await openDb();
+    const recs = await idbRequest(db.transaction(STORE).objectStore(STORE).getAll());
+    db.close();
+    return recs.map(r => ({ ...r, when: r.when ? new Date(r.when) : null }));
+  } catch (err) {
+    console.warn('could not read library:', err);
+    libraryAvailable = false;
+    return [];
+  }
+}
+
+async function clearLibrary() {
+  const db = await openDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).clear();
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+
+async function rebuildFromLibrary() {
+  const recs = await loadLibrary();
+  photos   = recs.filter(r => hasFix(r) && r.when).sort((a, b) => a.when - b.when);
+  unplaced = recs.filter(r => !hasFix(r) || !r.when);
+  trips    = clusterTrips(photos);
+  resetBt.hidden = false;
+  build();
+}
+
+/* ---------- clustering ----------
+   Walk photos in time order. Start a new trip when the gap to the previous
+   photo exceeds GAP_HOURS, or when the distance exceeds JUMP_KM (a flight
+   between two same-day photos should still split).                        */
+
+function clusterTrips(list) {
+  const out = [];
+  let cur = null;
+  for (const p of list) {
+    if (cur) {
+      const prev  = cur.photos[cur.photos.length - 1];
+      const hours = (p.when - prev.when) / 36e5;
+      const km    = haversineKm(prev.lat, prev.lon, p.lat, p.lon);
+      if (hours > GAP_HOURS || km > JUMP_KM) cur = null;
+    }
+    if (!cur) { cur = { photos: [] }; out.push(cur); }
+    cur.photos.push(p);
+  }
+
+  // Newest trip first — the one you just got back from is the one you want.
+  out.reverse();
+
+  out.forEach((t, i) => {
+    const ps = t.photos;
+    t.color = PALETTE[i % PALETTE.length];
+    t.start = ps[0].when;
+    t.end   = ps[ps.length - 1].when;
+    t.place = nearestCity(ps[0].lat, ps[0].lon);
+    const endPlace = nearestCity(ps[ps.length - 1].lat, ps[ps.length - 1].lon);
+    if (endPlace !== t.place) t.place += ' → ' + endPlace;
+
+    // group into days
+    const byDay = new Map();
+    for (const p of ps) {
+      const k = dayKey(p.when);
+      if (!byDay.has(k)) byDay.set(k, []);
+      byDay.get(k).push(p);
+    }
+    t.days = [...byDay.entries()].map(([k, v]) => ({ key: k, photos: v }));
+
+    // total distance walked
+    let km = 0;
+    for (let j = 1; j < ps.length; j++)
+      km += haversineKm(ps[j-1].lat, ps[j-1].lon, ps[j].lat, ps[j].lon);
+    t.km = km;
+  });
+
+  return out;
+}
+
+/* ---------- render ---------- */
+
+function build() {
+  if (!map) {
+    map = L.map('map', { zoomControl: true, worldCopyJump: true });
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap &copy; CARTO', maxZoom: 19
+    }).addTo(map);
+  }
+  layers.forEach(l => map.removeLayer(l));
+  layers = [];
+  markerIndex.clear();
+  if (cluster) { map.removeLayer(cluster); cluster = null; }
+
+  /* Previously every photo was its own marker on the map, so Leaflet held a DOM
+     node per photo and repositioned all of them on every zoom frame. The cluster
+     group keeps markers out of the document until they're actually on screen,
+     which is what makes a large library scroll and zoom smoothly. */
+  cluster = L.markerClusterGroup({
+    chunkedLoading: true,          // add markers in slices instead of one long freeze
+    maxClusterRadius: 55,
+    disableClusteringAtZoom: 17,   // close in, you get the numbered pins back
+    spiderfyOnMaxZoom: true,       // photos on the same spot fan out
+    showCoverageOnHover: false,
+    iconCreateFunction(c) {
+      const n = c.getChildCount();
+      const size = n < 10 ? 32 : n < 100 ? 38 : n < 1000 ? 46 : 54;
+      return L.divIcon({
+        className: '',
+        html: `<div class="cluster" style="width:${size}px;height:${size}px;` +
+              `line-height:${size - 4}px;font-size:${n < 1000 ? 12 : 11}px">${n}</div>`,
+        iconSize: [size, size]
+      });
+    }
+  });
+
+  // Lines go to a canvas renderer — an SVG path with thousands of points is
+  // its own source of zoom lag, separate from the markers.
+  const lineRenderer = L.canvas({ padding: 0.3 });
+  const bounds = L.latLngBounds([]);
+  const pending = [];
+
+  trips.forEach(trip => {
+    const pts = trip.photos.map(p => [p.lat, p.lon]);
+    pts.forEach(pt => bounds.extend(pt));   // extend, don't spread — push(...pts)
+                                            // overflows the stack on big libraries
+    if (pts.length > 1) {
+      const line = L.polyline(pts, {
+        color: trip.color, weight: 3, opacity: .75,
+        lineJoin: 'round', smoothFactor: 2, renderer: lineRenderer
+      }).addTo(map);
+      layers.push(line);
+    }
+
+    trip.photos.forEach((p, pi) => {
+      const m = L.marker([p.lat, p.lon], {
+        icon: L.divIcon({
+          className: '',
+          html: `<div class="marker-num" style="background:${trip.color}">${pi + 1}</div>`,
+          iconSize: [22, 22], iconAnchor: [11, 11]
+        })
+      });
+      // Popups are built on demand; making ten thousand HTML strings up front
+      // is wasted work when you'll open a handful.
+      m.bindPopup(() =>
+        `<b>${escapeHtml(p.name)}</b>` +
+        `<span>${longDay(p.when)} · ${clock(p.when)}<br>` +
+        `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}</span>`
+      );
+      pending.push(m);
+      markerIndex.set(p, m);
+    });
+  });
+
+  cluster.addLayers(pending);   // one bulk insert beats ten thousand single adds
+  map.addLayer(cluster);
+
+  if (bounds.isValid()) {
+    map.fitBounds(bounds, { padding: [45, 45], maxZoom: 14 });
+  } else {
+    map.setView([20, 0], 2);
+  }
+
+  renderSidebar();
+
+  const days  = trips.reduce((n, t) => n + t.days.length, 0);
+  const total = photos.length + unplaced.length;
+  const has   = total > 0;
+
+  exportBt.hidden = importBt.hidden = clearBt.hidden = !has;
+  importBt.hidden = false;   // importing a library is how you start on a new machine
+
+  const num = n => n.toLocaleString();
+  const parts = [
+    `<b>${num(photos.length)}</b> located`,
+    `<b>${num(trips.length)}</b> trip${trips.length === 1 ? '' : 's'}`,
+    `<b>${num(days)}</b> day${days === 1 ? '' : 's'}`
+  ];
+  if (unplaced.length) parts.push(`${num(unplaced.length)} unplaced`);
+  if (skipped) parts.push(`${num(skipped)} non-photo file${skipped === 1 ? '' : 's'} skipped`);
+  if (lastImport) {
+    parts.push(lastImport.added
+      ? `just added <b>${num(lastImport.added)}</b>` +
+        (lastImport.known ? `, ${num(lastImport.known)} already known` : '')
+      : `nothing new — all ${num(lastImport.known)} already in your library`);
+  }
+  if (!libraryAvailable && has) parts.push('not saved (storage unavailable)');
+
+  statsEl.innerHTML = has ? parts.join(' · ') : '';
+}
+
+function renderSidebar() {
+  side.innerHTML = '';
+
+  trips.forEach((trip, i) => {
+    const el = document.createElement('div');
+    el.className = 'trip' + (i === 0 ? ' open' : '');
+    el.innerHTML = `
+      <div class="trip-head">
+        <span class="caret">▶</span>
+        <span class="swatch" style="background:${trip.color}"></span>
+        <span class="trip-title">${escapeHtml(trip.place)}
+          <small>${rangeLabel(trip.start, trip.end)} · ${trip.photos.length} photos${
+            trip.km > 1 ? ' · ' + Math.round(trip.km) + ' km' : ''}</small>
+        </span>
+      </div>
+      <div class="trip-body"></div>`;
+
+    el.querySelector('.trip-head').addEventListener('click', () => {
+      el.classList.toggle('open');
+      if (el.classList.contains('open')) zoomTo(trip.photos);
+    });
+
+    const body = el.querySelector('.trip-body');
+    trip.days.forEach(day => {
+      const d = document.createElement('div');
+      d.className = 'day';
+      d.innerHTML = `<div class="day-head">
+          <span>${longDay(day.photos[0].when)}</span><span>${day.photos.length}</span>
+        </div>`;
+      d.querySelector('.day-head').addEventListener('click', () => zoomTo(day.photos));
+
+      day.photos.forEach(p => {
+        const s = document.createElement('div');
+        s.className = 'shot';
+        s.innerHTML = `<span class="t">${clock(p.when)}</span>
+                       <span class="n">${escapeHtml(p.name)}</span>`;
+        s.addEventListener('click', () => {
+          const m = markerIndex.get(p);
+          if (!m) return;
+          // The marker may be folded inside a cluster; this expands down to it
+          // first, otherwise openPopup fires on something not currently drawn.
+          if (cluster) cluster.zoomToShowLayer(m, () => m.openPopup());
+          else { map.setView([p.lat, p.lon], Math.max(map.getZoom(), 15)); m.openPopup(); }
+        });
+        d.appendChild(s);
+      });
+      body.appendChild(d);
+    });
+
+    side.appendChild(el);
+  });
+
+  if (unplaced.length) {
+    const el = document.createElement('div');
+    el.className = 'trip open';
+    el.id = 'unplaced';
+    el.innerHTML = `
+      <div class="trip-head">
+        <span class="swatch" style="background:var(--muted)"></span>
+        <span class="trip-title">Unplaced
+          <small>${unplaced.length} photo${unplaced.length === 1 ? '' : 's'} with no coordinates</small>
+        </span>
+      </div>
+      <div class="trip-body">${
+        unplaced.slice().sort((a, b) => (a.when || 0) - (b.when || 0))
+          .map(p => `<div class="up-item">${escapeHtml(p.name)}${
+            p.when ? ' · ' + dayKey(p.when) : ''}</div>`).join('')
+      }</div>`;
+    side.appendChild(el);
+  }
+
+  if (!trips.length && !unplaced.length) {
+    side.innerHTML = '<div class="empty">Nothing to show.</div>';
+  }
+}
+
+function zoomTo(ps) {
+  if (!ps.length) return;
+  map.fitBounds(L.latLngBounds(ps.map(p => [p.lat, p.lon])),
+    { padding: [55, 55], maxZoom: 16, animate: true });
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+/* ---------- start ----------
+   Restore whatever is already stored before showing the drop zone, so opening
+   the page lands you on your map rather than an empty prompt. */
+
+(async function start() {
+  importBt.hidden = false;
+  try {
+    const recs = await loadLibrary();
+    if (recs.length) {
+      intro.classList.add('hidden');
+      await rebuildFromLibrary();
+    }
+  } catch (err) {
+    console.warn('could not restore library:', err);
+  }
+})();
+</script>
+</body>
+</html>

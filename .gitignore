@@ -1,0 +1,42 @@
+# OS clutter
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Nothing is built, but keep these out if tooling ever shows up
+node_modules/
+.vercel
+.netlify
+
+# Never commit the photos — this app reads them locally and they are not part
+# of the project. Also stops a stray test folder becoming a 40GB push.
+#
+# App artwork is exempt below, so adding a PWA icon later doesn't get silently
+# swallowed by the *.png rule.
+*.jpg
+*.jpeg
+*.JPG
+*.JPEG
+*.heic
+*.HEIC
+*.png
+*.PNG
+*.mov
+*.MOV
+*.mp4
+*.MP4
+*.cr2
+*.CR2
+*.dng
+*.DNG
+
+# ...but do keep app artwork
+!icon*.png
+!favicon*.png
+!apple-touch-icon*.png
+!screenshot*.png

@@ -1,0 +1,8 @@
+# Normalise line endings so the repo stays consistent regardless of the machine
+# it's cloned on. Without this, Git on Windows warns on every add and a fresh
+# clone elsewhere can show every file as modified.
+* text=auto eol=lf
+
+# cities.js is generated, not hand-written — collapse it in diffs and exclude it
+# from language statistics so the repo isn't reported as 97% data.
+cities.js linguist-generated=true -diff

@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EXIF Probe — go/no-go</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font: 14px/1.5 ui-sans-serif, -apple-system, system-ui, sans-serif;
+    margin: 0; padding: 24px; max-width: 1100px; margin-inline: auto;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { opacity: .6; margin: 0 0 20px; }
+  #drop {
+    border: 2px dashed currentColor; border-radius: 12px;
+    padding: 48px 24px; text-align: center; opacity: .55;
+    transition: opacity .15s, background .15s; cursor: pointer;
+  }
+  #drop.hot { opacity: 1; background: rgba(127,127,127,.12); }
+  #drop strong { display: block; font-size: 16px; margin-bottom: 6px; }
+  #status { margin: 16px 0; font-variant-numeric: tabular-nums; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 10px; margin: 16px 0; }
+  .card { border: 1px solid rgba(127,127,127,.35); border-radius: 8px; padding: 10px 12px; }
+  .card b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+  .card span { opacity: .6; font-size: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin-top: 8px; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid rgba(127,127,127,.22); white-space: nowrap; }
+  th { position: sticky; top: 0; background: Canvas; }
+  .wrap { max-height: 420px; overflow: auto; border: 1px solid rgba(127,127,127,.3); border-radius: 8px; }
+  td.name { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+  .no { opacity: .45; }
+  .err { color: #c0392b; }
+  button { font: inherit; padding: 7px 13px; border-radius: 7px; border: 1px solid rgba(127,127,127,.5); background: transparent; cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+  pre { background: rgba(127,127,127,.12); padding: 12px; border-radius: 8px; overflow: auto; font-size: 12px; white-space: pre-wrap; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 14px 0; }
+  input[type=file] { font: inherit; }
+</style>
+</head>
+<body>
+
+<h1>EXIF Probe</h1>
+<p class="sub">Reads GPS + timestamps from a folder of photos. Nothing leaves this page. This is the go/no-go check before any UI gets built.</p>
+
+<div id="drop">
+  <strong>Drag a folder of photos here</strong>
+  <span>or click to pick a folder</span>
+  <input type="file" id="picker" webkitdirectory directory multiple hidden>
+</div>
+
+<div id="status"></div>
+<div class="cards" id="cards" hidden></div>
+
+<div class="row" id="actions" hidden>
+  <button id="copy">Copy summary report</button>
+  <button id="csv">Download CSV</button>
+  <label><input type="checkbox" id="onlyMissing"> show only photos missing GPS</label>
+</div>
+
+<div class="wrap" id="wrap" hidden>
+  <table id="tbl">
+    <thead><tr>
+      <th>#</th><th>File</th><th>Ext</th><th>Size</th>
+      <th>Latitude</th><th>Longitude</th><th>Timestamp</th><th>TZ offset</th>
+      <th>Camera</th><th>ms</th><th>Note</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<h3 id="reportHead" hidden>Summary</h3>
+<pre id="report" hidden></pre>
+
+<script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
+<script>
+const IMAGE_RE = /\.(hei[cf]|jpe?g|png|tiff?|dng|webp|avif|gif|bmp)$/i;
+const drop    = document.getElementById('drop');
+const picker  = document.getElementById('picker');
+const statusEl= document.getElementById('status');
+const cardsEl = document.getElementById('cards');
+const tbody   = document.querySelector('#tbl tbody');
+const wrap    = document.getElementById('wrap');
+const actions = document.getElementById('actions');
+const reportEl= document.getElementById('report');
+const reportHd= document.getElementById('reportHead');
+const onlyMissing = document.getElementById('onlyMissing');
+
+let results = [];
+
+/* ---------- input plumbing ---------- */
+
+drop.addEventListener('click', () => picker.click());
+picker.addEventListener('change', e => run([...e.target.files]));
+
+['dragenter','dragover'].forEach(t => drop.addEventListener(t, e => {
+  e.preventDefault(); drop.classList.add('hot');
+}));
+['dragleave','drop'].forEach(t => drop.addEventListener(t, e => {
+  e.preventDefault(); drop.classList.remove('hot');
+}));
+
+drop.addEventListener('drop', async e => {
+  e.preventDefault();
+  const items = [...e.dataTransfer.items]
+    .map(i => i.webkitGetAsEntry && i.webkitGetAsEntry())
+    .filter(Boolean);
+  if (items.length) {
+    statusEl.textContent = 'Walking folder…';
+    const files = [];
+    for (const entry of items) await walk(entry, files);
+    run(files);
+  } else {
+    run([...e.dataTransfer.files]);
+  }
+});
+
+// Recursively collect File objects out of a dropped directory tree.
+async function walk(entry, out, path = '') {
+  if (entry.isFile) {
+    const file = await new Promise((res, rej) => entry.file(res, rej));
+    file._path = path + file.name;
+    out.push(file);
+  } else if (entry.isDirectory) {
+    const reader = entry.createReader();
+    // readEntries only returns a batch at a time; loop until empty.
+    while (true) {
+      const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+      if (!batch.length) break;
+      for (const child of batch) await walk(child, out, path + entry.name + '/');
+    }
+  }
+}
+
+/* ---------- the actual parse ---------- */
+
+// exifr 7.1.3 rejects HEICs whose `ftyp` box exceeds 50 bytes — recent iPhones
+// write 52. Locate the TIFF block ourselves and hand exifr that slice instead.
+// Must match `Exif\0\0` + a real TIFF header; the bare string "Exif" also
+// appears earlier as an item-type declaration in the `iinf` box.
+function findTiffOffset(u8) {
+  for (let i = 0, n = u8.length - 14; i < n; i++) {
+    if (u8[i] !== 0x45 || u8[i+1] !== 0x78 || u8[i+2] !== 0x69 ||
+        u8[i+3] !== 0x66 || u8[i+4] !== 0x00 || u8[i+5] !== 0x00) continue;
+    const a = u8[i+6], b = u8[i+7], c = u8[i+8], d = u8[i+9];
+    if ((a === 0x4D && b === 0x4D && c === 0x00 && d === 0x2A) ||
+        (a === 0x49 && b === 0x49 && c === 0x2A && d === 0x00)) return i + 6;
+  }
+  return -1;
+}
+
+const PARSE_OPTS = {
+  tiff: true, ifd0: true, exif: true, gps: true,
+  translateValues: true, reviveValues: true,
+  pick: ['DateTimeOriginal','CreateDate','ModifyDate','OffsetTimeOriginal',
+         'GPSLatitude','GPSLongitude','GPSLatitudeRef','GPSLongitudeRef',
+         'Make','Model','Orientation']
+};
+
+async function readOne(file) {
+  const t0 = performance.now();
+  let lat = null, lon = null, when = null, tz = null, camera = null, note = '';
+  let x = null, rescued = false;
+
+  try {
+    x = await exifr.parse(file, PARSE_OPTS);
+  } catch (err) {
+    note = 'ERROR: ' + (err && err.message ? err.message : String(err));
+  }
+
+  // exifr couldn't open it (or opened it and found nothing) — try the HEIC route.
+  if (!x || (x.latitude == null && !x.DateTimeOriginal)) {
+    try {
+      const buf = await file.arrayBuffer();
+      const off = findTiffOffset(new Uint8Array(buf));
+      if (off >= 0) {
+        const y = await exifr.parse(buf.slice(off), PARSE_OPTS);
+        if (y) { x = y; rescued = true; note = ''; }
+      }
+    } catch (_) {}
+  }
+
+  if (x) {
+    lat = x.latitude ?? null;
+    lon = x.longitude ?? null;
+    when = x.DateTimeOriginal || x.CreateDate || x.ModifyDate || null;
+    tz = x.OffsetTimeOriginal || null;
+    camera = [x.Make, x.Model].filter(Boolean).join(' ') || null;
+  } else if (!note) {
+    note = 'no EXIF block';
+  }
+
+  if (rescued) note = 'HEIC fallback';
+  // Cameras with no GPS receiver often write the tags zeroed rather than
+  // omitting them. That is not a location, it is the Gulf of Guinea.
+  if (lat === 0 && lon === 0) { lat = lon = null; note = 'GPS tags zeroed'; }
+  if (lat == null && !note) note = 'no GPS';
+  return {
+    name: file._path || file.name,
+    base: file.name,
+    ext: (file.name.match(/\.[^.]+$/) || [''])[0].toLowerCase(),
+    size: file.size,
+    lat, lon, when, tz, camera,
+    ms: +(performance.now() - t0).toFixed(1),
+    note
+  };
+}
+
+async function run(allFiles) {
+  const files = allFiles.filter(f => IMAGE_RE.test(f.name) && !f.name.startsWith('.'));
+  const skipped = allFiles.length - files.length;
+  if (!files.length) {
+    statusEl.textContent = 'No image files found in that drop.';
+    return;
+  }
+  results = [];
+  tbody.innerHTML = '';
+  wrap.hidden = actions.hidden = cardsEl.hidden = false;
+
+  // Small concurrency pool — exifr reads only a header chunk, but no reason to
+  // open 800 file handles at once.
+  const POOL = 8;
+  let next = 0, done = 0;
+  const t0 = performance.now();
+
+  await Promise.all(Array.from({ length: POOL }, async () => {
+    while (next < files.length) {
+      const r = await readOne(files[next++]);
+      results.push(r);
+      if (++done % 10 === 0 || done === files.length) {
+        statusEl.textContent = `Parsed ${done} / ${files.length}…`;
+      }
+    }
+  }));
+
+  const elapsed = performance.now() - t0;
+  results.sort((a, b) => (a.when ? +a.when : Infinity) - (b.when ? +b.when : Infinity));
+  render();
+  summarize(files.length, skipped, elapsed);
+  console.log('EXIF probe results:', results);
+}
+
+/* ---------- output ---------- */
+
+function fmtBytes(n) {
+  return n > 1e6 ? (n / 1e6).toFixed(1) + ' MB' : Math.round(n / 1e3) + ' KB';
+}
+function fmtDate(d) {
+  if (!d) return null;
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function render() {
+  const show = onlyMissing.checked ? results.filter(r => r.lat == null) : results;
+  tbody.innerHTML = show.map((r, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td class="name" title="${esc(r.name)}">${esc(r.base)}</td>
+      <td>${esc(r.ext)}</td>
+      <td>${fmtBytes(r.size)}</td>
+      <td class="${r.lat == null ? 'no' : ''}">${r.lat == null ? '—' : r.lat.toFixed(6)}</td>
+      <td class="${r.lon == null ? 'no' : ''}">${r.lon == null ? '—' : r.lon.toFixed(6)}</td>
+      <td class="${r.when ? '' : 'no'}">${r.when ? fmtDate(r.when) : '—'}</td>
+      <td class="${r.tz ? '' : 'no'}">${r.tz || '—'}</td>
+      <td class="${r.camera ? '' : 'no'}">${esc(r.camera || '—')}</td>
+      <td>${r.ms}</td>
+      <td class="${/^ERROR/.test(r.note) ? 'err' : 'no'}">${esc(r.note)}</td>
+    </tr>`).join('');
+}
+onlyMissing.addEventListener('change', render);
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+function summarize(total, skipped, elapsed) {
+  const withGPS  = results.filter(r => r.lat != null);
+  const withTime = results.filter(r => r.when);
+  const errors   = results.filter(r => /^ERROR/.test(r.note));
+  const heic     = results.filter(r => /hei[cf]/.test(r.ext));
+  const heicGPS  = heic.filter(r => r.lat != null);
+
+  const byExt = {};
+  results.forEach(r => {
+    byExt[r.ext] = byExt[r.ext] || { n: 0, gps: 0 };
+    byExt[r.ext].n++;
+    if (r.lat != null) byExt[r.ext].gps++;
+  });
+
+  const times = withTime.map(r => +r.when).sort((a, b) => a - b);
+  const days  = new Set(withTime.map(r => fmtDate(r.when).slice(0, 10)));
+
+  const lats = withGPS.map(r => r.lat), lons = withGPS.map(r => r.lon);
+  const bbox = withGPS.length
+    ? `${Math.min(...lats).toFixed(4)}, ${Math.min(...lons).toFixed(4)}  →  ${Math.max(...lats).toFixed(4)}, ${Math.max(...lons).toFixed(4)}`
+    : 'n/a';
+
+  const pct = n => total ? Math.round(n / total * 100) + '%' : '0%';
+
+  cardsEl.innerHTML = `
+    <div class="card"><b>${total}</b><span>photos parsed</span></div>
+    <div class="card"><b>${withGPS.length}</b><span>with GPS (${pct(withGPS.length)})</span></div>
+    <div class="card"><b>${withTime.length}</b><span>with timestamp (${pct(withTime.length)})</span></div>
+    <div class="card"><b>${days.size}</b><span>distinct days</span></div>
+    <div class="card"><b>${heicGPS.length}/${heic.length}</b><span>HEIC with GPS</span></div>
+    <div class="card"><b>${errors.length}</b><span>parse errors</span></div>
+    <div class="card"><b>${(elapsed / total).toFixed(1)} ms</b><span>avg per photo</span></div>`;
+
+  const verdict = withGPS.length === 0
+    ? 'NO-GO — zero photos carried GPS. Premise needs rethinking.'
+    : withGPS.length / total < 0.35
+    ? 'SHAKY — under a third of photos have coordinates. Map will be sparse.'
+    : 'GO — enough coordinates to plot a real route.';
+
+  const lines = [
+    `EXIF PROBE — ${new Date().toISOString()}`,
+    `Browser: ${navigator.userAgent}`,
+    ``,
+    `VERDICT: ${verdict}`,
+    ``,
+    `Files parsed:      ${total}   (skipped ${skipped} non-image)`,
+    `With GPS:          ${withGPS.length} (${pct(withGPS.length)})`,
+    `With timestamp:    ${withTime.length} (${pct(withTime.length)})`,
+    `Parse errors:      ${errors.length}`,
+    `HEIC with GPS:     ${heicGPS.length} of ${heic.length}`,
+    `Distinct days:     ${days.size}`,
+    `Date range:        ${times.length ? fmtDate(new Date(times[0])) + '  →  ' + fmtDate(new Date(times[times.length-1])) : 'n/a'}`,
+    `Bounding box:      ${bbox}`,
+    `Total time:        ${(elapsed/1000).toFixed(2)}s  (${(elapsed/total).toFixed(1)} ms/photo)`,
+    ``,
+    `By extension:`,
+    ...Object.entries(byExt).sort((a,b) => b[1].n - a[1].n)
+      .map(([e, v]) => `  ${e.padEnd(8)} ${String(v.n).padStart(4)} files, ${String(v.gps).padStart(4)} with GPS`),
+    ``,
+    errors.length ? `Errors:\n` + errors.slice(0, 15).map(r => `  ${r.base}: ${r.note}`).join('\n') : `Errors: none`,
+    ``,
+    `Sample of first 5 located photos:`,
+    ...withGPS.slice(0, 5).map(r => `  ${r.base}  ${r.lat.toFixed(5)}, ${r.lon.toFixed(5)}  ${fmtDate(r.when) || 'no time'}`)
+  ];
+
+  reportEl.textContent = lines.join('\n');
+  reportEl.hidden = reportHd.hidden = false;
+  statusEl.textContent = verdict;
+}
+
+document.getElementById('copy').addEventListener('click', async e => {
+  await navigator.clipboard.writeText(reportEl.textContent);
+  e.target.textContent = 'Copied';
+  setTimeout(() => e.target.textContent = 'Copy summary report', 1200);
+});
+
+document.getElementById('csv').addEventListener('click', () => {
+  const q = s => `"${String(s == null ? '' : s).replace(/"/g, '""')}"`;
+  const csv = ['path,ext,bytes,lat,lon,timestamp,tz_offset,camera,parse_ms,note']
+    .concat(results.map(r => [r.name, r.ext, r.size, r.lat ?? '', r.lon ?? '',
+      fmtDate(r.when) ?? '', r.tz ?? '', r.camera ?? '', r.ms, r.note].map(q).join(',')))
+    .join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+  a.download = 'exif-probe.csv';
+  a.click();
+});
+</script>
+</body>
+</html>
