@@ -684,6 +684,18 @@ drop.addEventListener('drop', async e => {
 
 const CALLBACK_TIMEOUT = 15000;
 
+/* A phone is not a laptop. Eight files open at once is fine on a desktop and
+   is a good way to exhaust a mobile browser's memory allowance — at which point
+   iOS kills the tab and the import silently disappears, which looks exactly like
+   "I pressed the checkmark and nothing happened". */
+const READ_CONCURRENCY = (() => {
+  const mem = navigator.deviceMemory || 4;              // GB, where reported
+  const cores = navigator.hardwareConcurrency || 4;
+  const touch = matchMedia('(pointer: coarse)').matches;
+  if (touch || mem <= 4) return 3;
+  return Math.min(8, Math.max(4, cores));
+})();
+
 function once(fn, fallback) {
   return new Promise(resolve => {
     let settled = false, timer = null;
@@ -726,7 +738,7 @@ async function collectEntries(entry, out, h2) {
 async function resolveFiles(entries) {
   const files = [];
   let next = 0;
-  await Promise.all(Array.from({ length: 8 }, async () => {
+  await Promise.all(Array.from({ length: READ_CONCURRENCY }, async () => {
     while (next < entries.length) {
       const f = await once(cb => entries[next++].file(cb), null);
       if (f) files.push(f);
@@ -938,14 +950,37 @@ async function ingest(all) {
   Object.keys(stats).forEach(k => stats[k] = 0);
   const tStart = performance.now();
 
-  await Promise.all(Array.from({ length: 8 }, async () => {
+  /* Two passes, on purpose.
+
+     Reading metadata is cheap and near-certain to succeed. Building a thumbnail
+     from a HEIC means decoding a full 12-megapixel image, and doing several of
+     those at once on a phone is how a tab runs out of memory and dies — taking
+     the whole unsaved import with it.
+
+     So: pass one reads metadata for everything and commits it to the database
+     straight away. Pass two adds thumbnails on top, one at a time. If the tab is
+     killed partway through pass two, the photos are already on the map and
+     re-importing later fills in the previews. */
+
+  h2.textContent = `Reading ${files.length} photos…`;
+  await Promise.all(Array.from({ length: READ_CONCURRENCY }, async () => {
     while (next < files.length) {
-      out.push(await readExif(files[next++], true));
+      const i = next++;
+      out.push({ file: files[i], meta: await readExif(files[i], false) });
       if (++done % 5 === 0 || done === files.length) {
         h2.textContent = `Reading ${done} / ${files.length}…`;
       }
     }
   }));
+
+  h2.textContent = 'Saving…';
+  lastImport = await mergeIntoLibrary(out.map(o => toRecord(o.meta)));
+
+  intro.classList.add('hidden');
+  await rebuildFromLibrary();          // photos are on the map from here on
+
+  // ---- pass two: thumbnails, sequential, best effort ----
+  await buildThumbsInBackground(out);
 
   // Open the console after a slow import — this says where the time actually went.
   console.log(
@@ -959,12 +994,48 @@ async function ingest(all) {
       'thumbnails':     `${stats.thumbs} made, ${(stats.thumbBytes/1048576).toFixed(1)} MB stored`
     });
 
-  h2.textContent = 'Merging into your library…';
-  lastImport = await mergeIntoLibrary(out.map(toRecord));
-
-  intro.classList.add('hidden');
   h2.textContent = 'Drag a folder of photos here';
+}
+
+/* Thumbnails, after the metadata is already safely stored.
+
+   Strictly one at a time: each HEIC decode inflates to a full-resolution bitmap
+   in memory, and running a batch of those in parallel is what kills the tab on a
+   phone. A pause every few photos hands the main thread back so the map stays
+   responsive and the garbage collector gets a chance to run. */
+
+async function buildThumbsInBackground(items) {
+  const pending = items.filter(o => o.meta && !o.meta.thumb);
+  if (!pending.length) return;
+
+  for (let i = 0; i < pending.length; i++) {
+    const o = pending[i];
+    try {
+      const thumb = await makeThumb(o.file, null);
+      if (thumb) {
+        stats.thumbs++;
+        stats.thumbBytes += thumb.size;
+        await saveThumb(toRecord(o.meta).id, thumb);
+      }
+    } catch (_) { /* one bad photo shouldn't stop the rest */ }
+
+    if (i % 4 === 3) {
+      statsEl.textContent = `Making previews… ${i + 1} of ${pending.length}`;
+      await new Promise(r => setTimeout(r, 0));   // yield to the browser
+    }
+  }
   await rebuildFromLibrary();
+}
+
+async function saveThumb(id, thumb) {
+  if (!libraryAvailable) return;
+  try {
+    const db = await openDb();
+    const store = db.transaction(STORE, 'readwrite').objectStore(STORE);
+    const rec = await idbRequest(store.get(id));
+    if (rec) { rec.thumb = thumb; store.put(rec); }
+    db.close();
+  } catch (_) { libraryAvailable = false; }
 }
 
 /* ---------- the library ----------
