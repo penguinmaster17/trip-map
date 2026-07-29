@@ -11,9 +11,13 @@ The photos never leave the machine — there is nowhere for them to go.
 
 Open `index.html` and drag a folder of photos onto the page, or click to pick one.
 
-- **Map** — one colored route per trip, pins numbered in time order. Zoomed out,
-  nearby photos collapse into counted clusters; zoom past 17 and the individual
-  pins return.
+- **Map** — one colored route per trip, a dot per photo in time order. Zoomed
+  out, nearby photos collapse into counted clusters; zoom past 17 and individual
+  dots return. The basemap is deliberately near-monochrome (CARTO Positron, or
+  Dark Matter in dark mode) so the routes are the loudest thing on screen.
+- **Play** — replays a trip, drawing the route in the order the photos were
+  taken. Paced by distance rather than elapsed time, so movement gets the screen
+  time and overnight gaps don't stall it.
 - **Sidebar** — trips, each expanding into days, each day into photos. Click a
   trip or day to zoom to it, a photo to open its pin.
 - **Unplaced** — photos with no usable coordinates, listed rather than discarded.
