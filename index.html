@@ -114,7 +114,41 @@
   }
   .shot:hover { background: rgba(127,127,127,.1); border-left-color: var(--accent); }
   .shot .t { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
-  .shot .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shot .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .shot { align-items: center; }
+  .thumb {
+    width: 34px; height: 34px; flex: none; border-radius: 4px;
+    object-fit: cover; background: rgba(127,127,127,.18);
+  }
+  .thumb.empty { background: rgba(127,127,127,.12); }
+
+  /* ---- full-screen photo ---- */
+  #viewer {
+    position: fixed; inset: 0; z-index: 2000; display: none;
+    background: rgba(8,10,14,.94); align-items: center; justify-content: center;
+    flex-direction: column; gap: 14px; padding: 24px;
+    padding-top: calc(24px + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+  #viewer.open { display: flex; }
+  #viewer img {
+    max-width: 100%; max-height: 72vh; border-radius: 8px;
+    /* Thumbnails are small; let the browser scale them smoothly rather than
+       showing a hard pixel grid. */
+    image-rendering: auto; box-shadow: 0 8px 40px rgba(0,0,0,.5);
+  }
+  #viewer .meta { color: #e8eaed; text-align: center; font-size: 13px; line-height: 1.6; }
+  #viewer .meta b { display: block; font-size: 15px; margin-bottom: 4px; }
+  #viewer .meta span { color: #9aa1ab; }
+  #viewer .hint { color: #6b7280; font-size: 12px; max-width: 380px; text-align: center; }
+  #viewer .close {
+    position: absolute; top: calc(14px + env(safe-area-inset-top, 0px)); right: 16px;
+    background: rgba(255,255,255,.1); border-color: transparent; color: #fff;
+  }
+  #viewer .none {
+    color: #6b7280; border: 1px dashed #39404d; border-radius: 10px;
+    padding: 48px 32px; font-size: 13px;
+  }
 
   #unplaced .trip-head { cursor: default; }
   #unplaced .trip-head:hover { background: none; }
@@ -135,6 +169,10 @@
   .leaflet-popup-content { margin: 10px 12px; font: 13px/1.45 ui-sans-serif, sans-serif; }
   .leaflet-popup-content b { display: block; margin-bottom: 3px; }
   .leaflet-popup-content span { color: #666; font-size: 12px; }
+  .popup-thumb {
+    display: block; max-width: 190px; max-height: 190px; border-radius: 5px;
+    margin-bottom: 7px; cursor: zoom-in;
+  }
 
   .empty { padding: 30px 16px; color: var(--muted); text-align: center; font-size: 13px; }
 
@@ -191,6 +229,11 @@
   <div id="side"><div class="empty">No photos loaded.</div></div>
   <div id="map"></div>
 </main>
+
+<div id="viewer">
+  <button class="close" id="viewerClose">Close</button>
+  <div id="viewerBody"></div>
+</div>
 
 <div id="intro">
   <div id="drop">
@@ -354,7 +397,11 @@ const clearBt  = document.getElementById('clear');
 const jsonPicker = document.getElementById('jsonPicker');
 
 exportBt.addEventListener('click', async () => {
-  const recs = (await loadLibrary()).map(r => ({ ...r, when: r.when ? +r.when : null }));
+  // Thumbnails are dropped from the export on purpose. Base64-encoding them
+  // would turn a 300 KB file into hundreds of megabytes, and they can always be
+  // rebuilt by re-importing the original folder.
+  const recs = (await loadLibrary()).map(({ thumb, ...r }) =>
+    ({ ...r, when: r.when ? +r.when : null }));
   const blob = new Blob([JSON.stringify({
     format: 'trip-map/v1',
     exported: new Date().toISOString(),
@@ -569,7 +616,8 @@ function findTiffOffset(u8) {
 
 const HEIC_PREFIXES = [256 * 1024, 1024 * 1024];
 
-const stats = { fast: 0, fallback: 0, failed: 0, bytes: 0, fastMs: 0, fallbackMs: 0 };
+const stats = { fast: 0, fallback: 0, failed: 0, bytes: 0, fastMs: 0, fallbackMs: 0,
+                thumbs: 0, thumbBytes: 0 };
 
 async function looksLikeHeif(file) {
   if (file.size < 16) return false;
@@ -589,7 +637,13 @@ async function parseStubbornHeic(file) {
     const buf = await file.slice(0, size).arrayBuffer();
     stats.bytes += buf.byteLength;
     const off = findTiffOffset(new Uint8Array(buf));
-    if (off >= 0) return exifr.parse(buf.slice(off), PARSE_OPTS);
+    if (off >= 0) {
+      // The sliced TIFF block is handed back as well — if this file does keep a
+      // preview in EXIF, that's where it lives, and re-reading the file to find
+      // it again would be wasteful.
+      const tiff = buf.slice(off);
+      return { parsed: await exifr.parse(tiff, PARSE_OPTS), tiff };
+    }
   }
   return null;
 }
@@ -606,8 +660,63 @@ function hasFix(p) {
          Math.abs(p.lat) <= 90 && Math.abs(p.lon) <= 180;
 }
 
-async function readExif(file) {
-  let lat = null, lon = null, when = null, x = null;
+/* ---------- thumbnails ----------
+   Two routes, cheapest first.
+
+   Most JPEGs carry a small preview inside their EXIF already, so lifting it out
+   costs a few kilobytes and no image decoding whatsoever. HEIC doesn't work that
+   way — it keeps previews as separate items in the container, which exifr won't
+   hand back — so those need a real decode via createImageBitmap. That decodes
+   HEIC natively on iOS and Safari but throws on desktop Chrome, which is fine:
+   a photo simply ends up without a thumbnail rather than breaking the import. */
+
+const THUMB_PX = 200;      // longest edge
+const THUMB_QUALITY = 0.72;
+
+let canDecodeHeic = null;  // null = untested, then true/false. Tested once.
+
+async function shrinkToBlob(source) {
+  const w = source.width, h = source.height;
+  if (!w || !h) return null;
+  const scale = Math.min(1, THUMB_PX / Math.max(w, h));
+  const cw = Math.max(1, Math.round(w * scale));
+  const ch = Math.max(1, Math.round(h * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = cw; canvas.height = ch;
+  canvas.getContext('2d').drawImage(source, 0, 0, cw, ch);
+
+  return new Promise(resolve =>
+    canvas.toBlob(resolve, 'image/jpeg', THUMB_QUALITY));
+}
+
+async function makeThumb(file, tiffBuffer) {
+  // 1. The embedded EXIF preview, if there is one. Nearly free.
+  try {
+    const embedded = await exifr.thumbnail(tiffBuffer || file);
+    if (embedded && embedded.byteLength > 512) {
+      return new Blob([embedded], { type: 'image/jpeg' });
+    }
+  } catch (_) { /* no embedded preview — fall through */ }
+
+  // 2. Decode and downscale. Only formats this browser understands.
+  if (canDecodeHeic === false && /hei[cf]$/i.test(file.name)) return null;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const blob = await shrinkToBlob(bitmap);
+    bitmap.close();
+    if (/hei[cf]$/i.test(file.name)) canDecodeHeic = true;
+    return blob;
+  } catch (_) {
+    // Remember the failure so 10,000 HEICs don't each retry a decode that
+    // this browser was never going to manage.
+    if (/hei[cf]$/i.test(file.name)) canDecodeHeic = false;
+    return null;
+  }
+}
+
+async function readExif(file, wantThumb) {
+  let lat = null, lon = null, when = null, x = null, tiff = null;
 
   const t0 = performance.now();
   try {
@@ -617,7 +726,7 @@ async function readExif(file) {
   if (!x || (x.latitude == null && !x.DateTimeOriginal)) {
     try {
       const rescued = await parseStubbornHeic(file);
-      if (rescued) x = rescued;
+      if (rescued) { x = rescued.parsed; tiff = rescued.tiff; }
       stats.fallback++;
       stats.fallbackMs += performance.now() - t0;
     } catch (_) { stats.failed++; }
@@ -632,9 +741,15 @@ async function readExif(file) {
     when = x.DateTimeOriginal || x.CreateDate || x.ModifyDate || null;
   }
 
+  let thumb = null;
+  if (wantThumb) {
+    thumb = await makeThumb(file, tiff);
+    if (thumb) { stats.thumbs++; stats.thumbBytes += thumb.size; }
+  }
+
   // Fall back to file mtime so a photo without EXIF time still orders sensibly.
   if (!when && file.lastModified) when = new Date(file.lastModified);
-  return { name: file.name, size: file.size, lat, lon, when };
+  return { name: file.name, size: file.size, lat, lon, when, thumb };
 }
 
 async function ingest(all) {
@@ -662,7 +777,7 @@ async function ingest(all) {
 
   await Promise.all(Array.from({ length: 8 }, async () => {
     while (next < files.length) {
-      out.push(await readExif(files[next++]));
+      out.push(await readExif(files[next++], true));
       if (++done % 5 === 0 || done === files.length) {
         h2.textContent = `Reading ${done} / ${files.length}…`;
       }
@@ -677,7 +792,8 @@ async function ingest(all) {
       'fast path':      `${stats.fast} photos, ${(stats.fastMs/(stats.fast||1)).toFixed(1)} ms each`,
       'HEIC fallback':  `${stats.fallback} photos, ${(stats.fallbackMs/(stats.fallback||1)).toFixed(1)} ms each`,
       'unreadable':     stats.failed,
-      'bytes read':     `${(stats.bytes/1048576).toFixed(0)} MB`
+      'bytes read':     `${(stats.bytes/1048576).toFixed(0)} MB`,
+      'thumbnails':     `${stats.thumbs} made, ${(stats.thumbBytes/1048576).toFixed(1)} MB stored`
     });
 
   h2.textContent = 'Merging into your library…';
@@ -734,6 +850,9 @@ function toRecord(p) {
     lat: located ? p.lat : null,
     lon: located ? p.lon : null,
     when: whenMs,
+    // IndexedDB stores Blobs directly, so the thumbnail rides along with the
+    // record. It is deliberately left out of JSON export — see below.
+    thumb: p.thumb || null,
     addedAt: Date.now()
   };
 }
@@ -755,7 +874,15 @@ async function mergeIntoLibrary(records) {
       const tx = db.transaction(STORE, 'readwrite');
       const store = tx.objectStore(STORE);
       for (const [id, rec] of batch) {
-        if (known.has(id)) { seen++; continue; }
+        if (known.has(id)) {
+          seen++;
+          // Already have it — but if this pass produced a thumbnail and the
+          // stored copy predates thumbnails, take the upgrade. That way
+          // re-importing an old folder fills in previews rather than doing
+          // nothing at all.
+          if (rec.thumb) store.put(rec);
+          continue;
+        }
         store.put(rec);
         added++;
       }
@@ -921,11 +1048,18 @@ function build() {
       });
       // Popups are built on demand; making ten thousand HTML strings up front
       // is wasted work when you'll open a handful.
-      m.bindPopup(() =>
-        `<b>${escapeHtml(p.name)}</b>` +
-        `<span>${longDay(p.when)} · ${clock(p.when)}<br>` +
-        `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}</span>`
-      );
+      m.bindPopup(() => {
+        const url = thumbUrl(p);
+        const el = document.createElement('div');
+        el.innerHTML =
+          (url ? `<img src="${url}" class="popup-thumb" alt="">` : '') +
+          `<b>${escapeHtml(p.name)}</b>` +
+          `<span>${longDay(p.when)} · ${clock(p.when)}<br>` +
+          `${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}</span>`;
+        const img = el.querySelector('img');
+        if (img) img.addEventListener('click', () => openViewer(p));
+        return el;
+      });
       pending.push(m);
       markerIndex.set(p, m);
     });
@@ -1002,8 +1136,14 @@ function renderSidebar() {
       day.photos.forEach(p => {
         const s = document.createElement('div');
         s.className = 'shot';
-        s.innerHTML = `<span class="t">${clock(p.when)}</span>
-                       <span class="n">${escapeHtml(p.name)}</span>`;
+        s.appendChild(thumbEl(p));
+        s.insertAdjacentHTML('beforeend',
+          `<span class="t">${clock(p.when)}</span>
+           <span class="n">${escapeHtml(p.name)}</span>`);
+        s.querySelector('.thumb').addEventListener('click', e => {
+          e.stopPropagation();          // tapping the image opens it full screen,
+          openViewer(p);                // tapping the row still flies to the pin
+        });
         s.addEventListener('click', () => {
           const m = markerIndex.get(p);
           if (!m) return;
@@ -1050,6 +1190,70 @@ function renderSidebar() {
     side.innerHTML = '<div class="empty">Nothing to show.</div>';
   }
 }
+
+/* ---------- thumbnail display ----------
+   Object URLs are created once per photo and cached on the record. Minting one
+   per sidebar row up front would mean thousands of live URLs, so images are
+   only given a src when they scroll into view. */
+
+function thumbUrl(p) {
+  if (!p.thumb) return null;
+  if (!p._url) p._url = URL.createObjectURL(p.thumb);
+  return p._url;
+}
+
+const thumbObserver = new IntersectionObserver(entries => {
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue;
+    const img = entry.target;
+    const p = img._photo;
+    const url = p && thumbUrl(p);
+    if (url) img.src = url;
+    thumbObserver.unobserve(img);
+  }
+}, { rootMargin: '200px' });
+
+function thumbEl(p) {
+  const img = document.createElement('img');
+  img.className = 'thumb' + (p.thumb ? '' : ' empty');
+  img.alt = '';
+  img.loading = 'lazy';
+  img.decoding = 'async';
+  if (p.thumb) { img._photo = p; thumbObserver.observe(img); }
+  return img;
+}
+
+/* ---------- full-screen view ----------
+   This shows the stored thumbnail, not the original file. A web page can't hold
+   onto the photo itself between sessions, and it has no way to open the Photos
+   app at a particular image — the file picker only ever hands over a name and
+   some bytes, never an identifier worth linking to. The filename is shown
+   because that is what you'd search for in Photos. */
+
+const viewer = document.getElementById('viewer');
+const viewerBody = document.getElementById('viewerBody');
+
+function openViewer(p) {
+  const url = thumbUrl(p);
+  viewerBody.innerHTML =
+    (url
+      ? `<img src="${url}" alt="">`
+      : `<div class="none">No preview stored for this photo</div>`) +
+    `<div class="meta"><b>${escapeHtml(p.name)}</b>` +
+    `<span>${p.when ? longDay(p.when) + ' · ' + clock(p.when) : 'no timestamp'}` +
+    (hasFix(p) ? `<br>${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}` : '<br>no coordinates') +
+    `</span></div>` +
+    `<div class="hint">Stored preview — search this filename in Photos for the original.</div>`;
+  viewer.classList.add('open');
+}
+
+function closeViewer() { viewer.classList.remove('open'); }
+
+document.getElementById('viewerClose').addEventListener('click', closeViewer);
+viewer.addEventListener('click', e => { if (e.target === viewer) closeViewer(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && viewer.classList.contains('open')) closeViewer();
+});
 
 function zoomTo(ps) {
   if (!ps.length) return;

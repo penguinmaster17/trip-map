@@ -34,7 +34,26 @@ import 1 again, same folder      -> added 0, known 3
 import 2 (overlaps + 2 new)      -> added 2, known 3
 ```
 
-**Export** writes the whole library to a JSON file. Keep it somewhere synced and
+### Thumbnails
+
+Each photo gets a small stored preview, shown in the sidebar and in map popups;
+tap one for a full-screen view. Two routes are tried, cheapest first: most JPEGs
+carry a preview inside their EXIF already, which costs a few kilobytes and no
+decoding, and anything without one is decoded and downscaled via
+`createImageBitmap`. HEIC decodes natively on iOS and Safari but not on desktop
+Chrome — those photos simply end up without a preview rather than failing.
+
+Re-importing a folder upgrades existing records in place, so photos added before
+thumbnails existed gain them without being duplicated.
+
+**The full-screen view shows the stored preview, not the original file, and
+there is no way to open the Photos app at a specific image.** A web page never
+receives an identifier it could link to — the file picker hands over a name and
+some bytes, nothing more. That capability requires a native app using PhotoKit.
+
+**Export** writes the whole library to a JSON file. Thumbnails are excluded —
+base64 would turn a 300 KB file into hundreds of megabytes, and previews rebuild
+on re-import. Keep it somewhere synced and
 you have both a backup and a way to move between machines — **Import** merges
 one back in, skipping anything already present. **Clear** empties the database
 after confirming; it never touches your actual photo files.
