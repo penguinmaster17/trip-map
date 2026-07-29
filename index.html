@@ -121,7 +121,18 @@
   .empty { padding: 30px 16px; color: var(--muted); text-align: center; font-size: 13px; }
 
   .picks { display: flex; gap: 8px; justify-content: center; margin: 18px 0 0; flex-wrap: wrap; }
-  .picks button { padding: 9px 16px; }
+  .btn {
+    font: inherit; font-size: 13px; padding: 9px 16px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+    cursor: pointer; display: inline-block; user-select: none;
+  }
+  .btn:hover { border-color: var(--muted); }
+  /* Hidden from view but still a real, tappable input — display:none would stop
+     the label from activating it on some browsers. */
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
 
   /* ---- narrow screens ----
      The 320px sidebar beside a map only works on a desktop. On a phone the two
@@ -167,9 +178,12 @@
   <div id="drop">
     <h2>Drag a folder of photos here</h2>
     <p>Reads GPS and timestamps, plots your route, groups it by day.</p>
+    <!-- Labels, not buttons. iOS shows its Photos / Camera / Files chooser only
+         when the tap reaches the file input itself; a hidden input triggered by
+         .click() from script lands straight in the Files browser instead. -->
     <div class="picks">
-      <button id="pickFolder">Choose a folder</button>
-      <button id="pickPhotos">Choose photos</button>
+      <label class="btn" for="picker">Choose a folder</label>
+      <label class="btn" for="photoPicker">Choose photos</label>
     </div>
     <p class="note">
       Photos are added to your existing library, never replacing it. Everything
@@ -178,8 +192,8 @@
     <!-- Two inputs on purpose. Folder selection needs webkitdirectory, which iOS
          doesn't support — on a phone that input can come back empty, so there has
          to be a plain multi-file picker as well. -->
-    <input type="file" id="picker" webkitdirectory directory multiple hidden>
-    <input type="file" id="photoPicker" accept="image/*" multiple hidden>
+    <input type="file" id="picker" class="sr-only" webkitdirectory directory multiple>
+    <input type="file" id="photoPicker" class="sr-only" accept="image/*" multiple>
   </div>
 </div>
 
@@ -293,19 +307,11 @@ const resetBt= document.getElementById('reset');
 
 const photoPicker = document.getElementById('photoPicker');
 
-function openPicker(input) {
-  if (!busy) input.click();
-}
-
+// The two labels activate their inputs natively, so nothing is wired up for
+// them here. Tapping the surrounding area is a desktop convenience only.
 drop.addEventListener('click', e => {
-  if (e.target.closest('button')) return;   // the two buttons handle themselves
-  openPicker(picker);
-});
-document.getElementById('pickFolder').addEventListener('click', e => {
-  e.stopPropagation(); openPicker(picker);
-});
-document.getElementById('pickPhotos').addEventListener('click', e => {
-  e.stopPropagation(); openPicker(photoPicker);
+  if (e.target.closest('label, input, button')) return;
+  if (!busy) picker.click();
 });
 
 async function handlePicked(e) {
