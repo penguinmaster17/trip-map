@@ -9,7 +9,7 @@
  * returning visitors keep getting the old cached copy.
  */
 
-const CACHE_VERSION = 'trip-map-v2';
+const CACHE_VERSION = 'trip-map-v3';
 const TILE_CACHE    = 'trip-map-tiles-v1';
 const MAX_TILES     = 400;   // roughly a few cities' worth at the zooms you use
 

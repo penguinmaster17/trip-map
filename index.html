@@ -190,25 +190,79 @@
     overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
   }
 
-  /* ---- narrow screens ----
-     The 320px sidebar beside a map only works on a desktop. On a phone the two
-     stack, map first, and the header is allowed to wrap rather than overflow. */
-  @media (max-width: 720px) {
-    header { flex-wrap: wrap; gap: 8px 10px; padding: 9px 12px; }
-    header h1 { font-size: 14px; }
-    header .stats { font-size: 12px; order: 3; flex-basis: 100%; }
-    header .spacer { display: none; }
-    button { padding: 7px 11px; font-size: 12.5px; }
+  /* Phone chrome — hidden on desktop, where the header and sidebar work fine. */
+  #mobilebar, #mMenu, #sheetTop { display: none; }
 
-    main { flex-direction: column; }
-    #map  { height: 55vh; flex: none; }
-    #side {
-      width: auto; flex: 1; border-right: none;
-      border-top: 1px solid var(--line); overflow-y: auto;
+  /* ---- narrow screens ----
+     The map takes the whole screen and the trip list becomes a sheet that
+     slides up over it. Controls live along the bottom edge, because the top
+     of an iPhone screen is claimed by iOS gestures. */
+  @media (max-width: 720px) {
+    header { display: none; }
+
+    main { position: relative; }
+    #map {
+      position: absolute; inset: 0; height: auto; flex: none;
+      z-index: 1;
     }
+
+    /* The trip list as a bottom sheet, overlaying the map rather than shrinking
+       it — so the map never has to be told its size changed. */
+    #side {
+      position: absolute; left: 0; right: 0; bottom: 0; top: auto;
+      width: auto; height: 62vh; z-index: 900;
+      border-right: none; border-top: 1px solid var(--line);
+      border-radius: 16px 16px 0 0;
+      box-shadow: 0 -6px 28px rgba(0,0,0,.28);
+      transform: translateY(101%);
+      transition: transform .26s cubic-bezier(.32,.72,0,1);
+      padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+    }
+    body.sheet-open #side { transform: translateY(0); }
+
+    #sheetTop {
+      display: block; position: sticky; top: 0; z-index: 2;
+      background: var(--panel); padding: 8px 14px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    #sheetTop .grip {
+      width: 38px; height: 4px; border-radius: 2px; margin: 0 auto 8px;
+      background: var(--line);
+    }
+    #sheetTop .s { color: var(--muted); font-size: 12px; text-align: center; display: block; }
+
+    #mobilebar {
+      display: flex; gap: 8px; align-items: center; justify-content: center;
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 1000;
+      padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+      background: var(--bg);   /* fallback for browsers without color-mix */
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      backdrop-filter: blur(12px);
+      border-top: 1px solid var(--line);
+    }
+    #mobilebar > * { flex: 1; text-align: center; padding: 11px 8px; font-size: 13px; }
+    #mobilebar #mMore { flex: 0 0 52px; letter-spacing: 1px; }
+    body.sheet-open #mTrips { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+    #mMenu {
+      display: none; position: fixed; z-index: 1001;
+      right: 12px; bottom: calc(66px + env(safe-area-inset-bottom, 0px));
+      flex-direction: column; gap: 6px; padding: 8px;
+      background: var(--bg); border: 1px solid var(--line);
+      border-radius: 12px; box-shadow: 0 6px 28px rgba(0,0,0,.3);
+    }
+    #mMenu.open { display: flex; }
+    #mMenu button { text-align: left; padding: 10px 14px; }
+
+    #intro { z-index: 1200; }
     #drop { padding: 32px 20px; }
     #drop h2 { font-size: 17px; }
-    .picks button { flex: 1; min-width: 140px; }
+    .picks .btn { flex: 1; min-width: 140px; }
+
+    /* Leaflet puts its zoom buttons top-left, right where iOS wants the status
+       bar. Pinch works; the buttons don't need to be there. */
+    .leaflet-control-zoom { display: none; }
+    .leaflet-control-attribution { font-size: 9px; }
   }
 </style>
 </head>
@@ -226,7 +280,10 @@
 </header>
 
 <main>
-  <div id="side"><div class="empty">No photos loaded.</div></div>
+  <div id="side">
+    <div id="sheetTop"><div class="grip"></div><span class="s" id="sheetStats"></span></div>
+    <div id="sideBody"><div class="empty">No photos loaded.</div></div>
+  </div>
   <div id="map"></div>
 </main>
 
@@ -246,6 +303,7 @@
       <label class="btn" for="picker">Choose a folder</label>
       <label class="btn" for="photoPicker">Choose photos</label>
     </div>
+    <!-- inputs live outside this panel, at the end of the document -->
     <p class="note">
       Photos are added to your existing library, never replacing it. Everything
       runs in this tab — no upload, no server, nothing leaves your machine.
@@ -253,9 +311,27 @@
     <!-- Two inputs on purpose. Folder selection needs webkitdirectory, which iOS
          doesn't support — on a phone that input can come back empty, so there has
          to be a plain multi-file picker as well. -->
-    <input type="file" id="picker" class="sr-only" webkitdirectory directory multiple>
-    <input type="file" id="photoPicker" class="sr-only" accept="image/*" multiple>
   </div>
+</div>
+
+<!-- Kept at document level, not inside the intro panel. A label can only
+     activate an input that is actually rendered, and the intro panel gets
+     display:none once photos are loaded — which would break "Add photos". -->
+<input type="file" id="picker" class="sr-only" webkitdirectory directory multiple>
+<input type="file" id="photoPicker" class="sr-only" accept="image/*" multiple>
+
+<!-- Phone controls. These sit along the bottom edge because the top of an
+     iPhone screen belongs to iOS: reaching for a control up there pulls down
+     the status bar instead. -->
+<div id="mobilebar">
+  <button id="mTrips" aria-expanded="false">Trips</button>
+  <label class="btn" for="photoPicker">Add photos</label>
+  <button id="mMore" aria-label="More options">•••</button>
+</div>
+<div id="mMenu">
+  <button id="mExport">Export library</button>
+  <button id="mImport">Import library</button>
+  <button id="mClear" class="danger">Clear library</button>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -363,6 +439,8 @@ const intro  = document.getElementById('intro');
 const drop   = document.getElementById('drop');
 const picker = document.getElementById('picker');
 const side   = document.getElementById('side');
+const sideBody = document.getElementById('sideBody');
+const sheetStats = document.getElementById('sheetStats');
 const statsEl= document.getElementById('stats');
 const resetBt= document.getElementById('reset');
 
@@ -396,7 +474,7 @@ const importBt = document.getElementById('importBtn');
 const clearBt  = document.getElementById('clear');
 const jsonPicker = document.getElementById('jsonPicker');
 
-exportBt.addEventListener('click', async () => {
+async function doExport() {
   // Thumbnails are dropped from the export on purpose. Base64-encoding them
   // would turn a 300 KB file into hundreds of megabytes, and they can always be
   // rebuilt by re-importing the original folder.
@@ -414,9 +492,7 @@ exportBt.addEventListener('click', async () => {
   a.download = `trip-map-library-${new Date().toISOString().slice(0, 10)}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-});
-
-importBt.addEventListener('click', () => jsonPicker.click());
+}
 
 jsonPicker.addEventListener('change', async e => {
   const file = e.target.files[0];
@@ -451,16 +527,53 @@ jsonPicker.addEventListener('change', async e => {
   }
 });
 
-clearBt.addEventListener('click', async () => {
+async function doClear() {
   const n = photos.length + unplaced.length;
   if (!confirm(`Delete all ${n.toLocaleString()} photos from your library?\n\n` +
                `This only clears this browser's stored coordinates — your actual ` +
                `photo files are untouched. Export first if you want a copy.`)) return;
   await clearLibrary();
   photos = []; unplaced = []; trips = []; lastImport = null;
+  closeSheet();
   build();
   intro.classList.remove('hidden');
+}
+
+const doImport = () => jsonPicker.click();
+
+/* ---------- phone chrome ----------
+   On a narrow screen the header is hidden and these take over: a bottom bar
+   that stays clear of the iOS status-bar gesture zone, and the trip list as a
+   sheet that slides up over the map. */
+
+const mMenu  = document.getElementById('mMenu');
+const mTrips = document.getElementById('mTrips');
+
+function openSheet()  { document.body.classList.add('sheet-open');  mTrips.setAttribute('aria-expanded', 'true'); }
+function closeSheet() { document.body.classList.remove('sheet-open'); mTrips.setAttribute('aria-expanded', 'false'); }
+function toggleSheet() {
+  document.body.classList.contains('sheet-open') ? closeSheet() : openSheet();
+}
+const closeMenu = () => mMenu.classList.remove('open');
+
+mTrips.addEventListener('click', () => { closeMenu(); toggleSheet(); });
+document.getElementById('sheetTop').addEventListener('click', closeSheet);
+
+document.getElementById('mMore').addEventListener('click', e => {
+  e.stopPropagation();
+  mMenu.classList.toggle('open');
 });
+document.addEventListener('click', e => {
+  if (!mMenu.contains(e.target)) closeMenu();
+});
+
+document.getElementById('mExport').addEventListener('click', () => { closeMenu(); doExport(); });
+document.getElementById('mImport').addEventListener('click', () => { closeMenu(); doImport(); });
+document.getElementById('mClear').addEventListener('click',  () => { closeMenu(); doClear(); });
+
+exportBt.addEventListener('click', doExport);
+importBt.addEventListener('click', doImport);
+clearBt.addEventListener('click', doClear);
 
 ['dragenter','dragover'].forEach(t =>
   drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('hot'); }));
@@ -1100,10 +1213,13 @@ function build() {
   if (!libraryAvailable && has) parts.push('not saved (storage unavailable)');
 
   statsEl.innerHTML = has ? parts.join(' · ') : '';
+  // Same summary, plain text, for the sheet handle on phones where the header
+  // is hidden entirely.
+  sheetStats.textContent = has ? parts.join(' · ').replace(/<\/?b>/g, '') : '';
 }
 
 function renderSidebar() {
-  side.innerHTML = '';
+  sideBody.innerHTML = '';
 
   trips.forEach((trip, i) => {
     const el = document.createElement('div');
@@ -1123,6 +1239,8 @@ function renderSidebar() {
       el.classList.toggle('open');
       if (el.classList.contains('open')) zoomTo(trip.photos);
     });
+    // Expanding a trip zooms the map to it — keep the sheet up so you can then
+    // pick a day, but the map underneath has already moved.
 
     const body = el.querySelector('.trip-body');
     trip.days.forEach(day => {
@@ -1131,7 +1249,11 @@ function renderSidebar() {
       d.innerHTML = `<div class="day-head">
           <span>${longDay(day.photos[0].when)}</span><span>${day.photos.length}</span>
         </div>`;
-      d.querySelector('.day-head').addEventListener('click', () => zoomTo(day.photos));
+      // Zooming somewhere is a request to look at the map, so the sheet gets
+      // out of the way. On desktop the class is inert.
+      d.querySelector('.day-head').addEventListener('click', () => {
+        zoomTo(day.photos); closeSheet();
+      });
 
       day.photos.forEach(p => {
         const s = document.createElement('div');
@@ -1149,6 +1271,7 @@ function renderSidebar() {
           if (!m) return;
           // The marker may be folded inside a cluster; this expands down to it
           // first, otherwise openPopup fires on something not currently drawn.
+          closeSheet();
           if (cluster) cluster.zoomToShowLayer(m, () => m.openPopup());
           else { map.setView([p.lat, p.lon], Math.max(map.getZoom(), 15)); m.openPopup(); }
         });
@@ -1157,7 +1280,7 @@ function renderSidebar() {
       body.appendChild(d);
     });
 
-    side.appendChild(el);
+    sideBody.appendChild(el);
   });
 
   if (unplaced.length) {
@@ -1183,11 +1306,11 @@ function renderSidebar() {
           .map(p => `<div class="up-item">${escapeHtml(p.name)}${
             p.when ? ' · ' + dayKey(p.when) : ''}</div>`).join('')
       }</div>`;
-    side.appendChild(el);
+    sideBody.appendChild(el);
   }
 
   if (!trips.length && !unplaced.length) {
-    side.innerHTML = '<div class="empty">Nothing to show.</div>';
+    sideBody.innerHTML = '<div class="empty">Nothing to show.</div>';
   }
 }
 
