@@ -514,11 +514,54 @@ drop.addEventListener('click', e => {
   if (!busy) picker.click();
 });
 
+/* ---------- crash breadcrumbs ----------
+   A phone browser that runs out of memory kills the tab and reloads the page.
+   From the outside that is indistinguishable from "I tapped the button and
+   nothing happened", which makes the failure impossible to diagnose. So each
+   stage of an import writes a marker to localStorage and clears it on success.
+   Anything left behind on the next load is the record of a crash, and says
+   exactly how far it got. */
+
+const CRUMB = 'tripmap.import';
+const crumb = (stage, extra = {}) => {
+  try { localStorage.setItem(CRUMB, JSON.stringify({ stage, at: Date.now(), ...extra })); }
+  catch (_) {}
+};
+const clearCrumb = () => { try { localStorage.removeItem(CRUMB); } catch (_) {} };
+
+function reportLastCrash() {
+  let c = null;
+  try { c = JSON.parse(localStorage.getItem(CRUMB) || 'null'); } catch (_) {}
+  if (!c) return;
+  clearCrumb();
+
+  const msg = c.stage === 'received'
+    ? `Last time, the picker handed over ${c.count} photos but the tab was killed before reading any. `
+    + `That is a memory limit — try 20–30 at a time.`
+    : c.stage === 'reading'
+    ? `Last time, reading stopped at photo ${c.done} of ${c.count}. The tab ran out of memory. `
+    + `Anything already saved is on the map; try a smaller batch for the rest.`
+    : `Last import stopped during "${c.stage}".`;
+
+  statsEl.textContent = msg;
+  console.warn('previous import did not finish:', c);
+}
+
 async function handlePicked(e) {
   if (busy) return;
   const files = [...e.target.files];
   e.target.value = '';           // so picking the same photos twice still fires
-  if (!files.length) return;
+
+  // Nothing came back at all — the picker itself failed, before any of our code.
+  if (!files.length) {
+    statsEl.textContent = 'The picker returned no photos. If you selected some, '
+      + 'iOS may still be downloading them from iCloud — try again on Wi-Fi, or in smaller batches.';
+    return;
+  }
+
+  crumb('received', { count: files.length });
+  drop.querySelector('h2').textContent = `Received ${files.length} photos…`;
+
   busy = true;
   skipped = 0;
   try { await ingest(files); } finally { busy = false; }
@@ -974,18 +1017,38 @@ async function ingest(all) {
      re-importing later fills in the previews. */
 
   h2.textContent = `Reading ${files.length} photos…`;
-  await Promise.all(Array.from({ length: READ_CONCURRENCY }, async () => {
-    while (next < files.length) {
-      const i = next++;
-      out.push({ file: files[i], meta: await readExif(files[i], false) });
-      if (++done % 5 === 0 || done === files.length) {
-        h2.textContent = `Reading ${done} / ${files.length}…`;
-      }
-    }
-  }));
 
-  h2.textContent = 'Saving…';
-  lastImport = await mergeIntoLibrary(out.map(o => toRecord(o.meta)));
+  /* Committed in chunks rather than all at the end. If the tab is killed while
+     reading 400 photos, everything already written survives — previously the
+     whole batch was lost because nothing was saved until the last one finished. */
+  const CHUNK = 25;
+  for (let start = 0; start < files.length; start += CHUNK) {
+    const slice = files.slice(start, start + CHUNK);
+    const part = [];
+    let k = 0;
+
+    await Promise.all(Array.from({ length: READ_CONCURRENCY }, async () => {
+      while (k < slice.length) {
+        const f = slice[k++];
+        part.push({ file: f, meta: await readExif(f, false) });
+        if (++done % 5 === 0 || done === files.length) {
+          h2.textContent = `Reading ${done} / ${files.length}…`;
+          crumb('reading', { done, count: files.length });
+        }
+      }
+    }));
+
+    const merged = await mergeIntoLibrary(part.map(o => toRecord(o.meta)));
+    lastImport = lastImport && start
+      ? { added: lastImport.added + merged.added,
+          known: lastImport.known + merged.known,
+          total: merged.total }
+      : merged;
+
+    out.push(...part);
+    await new Promise(r => setTimeout(r, 0));   // let the browser breathe
+  }
+  clearCrumb();
 
   intro.classList.add('hidden');
   await rebuildFromLibrary();          // photos are on the map from here on
@@ -1760,6 +1823,8 @@ function escapeHtml(s) {
       intro.classList.add('hidden');
       await rebuildFromLibrary();
     }
+    // After the rebuild, or build() would overwrite the message.
+    reportLastCrash();
   } catch (err) {
     console.warn('could not restore library:', err);
   }
