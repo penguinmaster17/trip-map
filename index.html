@@ -184,14 +184,25 @@
   }
   .play-trip:hover { color: var(--fg); border-color: var(--muted); }
 
+  /* Hidden by visibility, not by sliding it out of frame. A percentage
+     translate moves the bar by a multiple of its own height, which cleared the
+     screen at 18px from the bottom but not once it was raised above the mobile
+     nav — so it sat there permanently, covering the buttons. Visibility doesn't
+     care where the bar is or how tall it grew. */
   #playbar {
-    position: absolute; left: 50%; transform: translateX(-50%) translateY(140%);
-    bottom: 18px; z-index: 1100; width: min(460px, calc(100% - 28px));
+    position: absolute; left: 50%; bottom: 18px; z-index: 1100;
+    width: min(460px, calc(100% - 28px));
     background: var(--bg); border: 1px solid var(--line); border-radius: 12px;
     box-shadow: 0 6px 30px rgba(0,0,0,.22); padding: 12px 14px;
-    transition: transform .28s cubic-bezier(.32,.72,0,1);
+    visibility: hidden; opacity: 0; pointer-events: none;
+    transform: translateX(-50%) translateY(16px);
+    transition: opacity .2s, transform .28s cubic-bezier(.32,.72,0,1), visibility 0s .2s;
   }
-  #playbar.on { transform: translateX(-50%) translateY(0); }
+  #playbar.on {
+    visibility: visible; opacity: 1; pointer-events: auto;
+    transform: translateX(-50%) translateY(0);
+    transition: opacity .2s, transform .28s cubic-bezier(.32,.72,0,1), visibility 0s;
+  }
   #playbar .row1 { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
   #playbar .caption { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; }
   #playbar .caption small {
