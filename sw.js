@@ -9,9 +9,10 @@
  * returning visitors keep getting the old cached copy.
  */
 
-const CACHE_VERSION = 'trip-map-v8';
+const CACHE_VERSION = 'trip-map-v9';
 const TILE_CACHE    = 'trip-map-tiles-v1';
-const MAX_TILES     = 400;   // roughly a few cities' worth at the zooms you use
+const MAX_TILES     = 1200;  // a few cities' worth at the zooms you actually use;
+                             // cached tiles are what make a second visit feel instant
 
 // The app itself. cities.js is 1.2 MB, which is the bulk of it, but caching the
 // place names is what lets trips still be labeled offline.

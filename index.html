@@ -1294,12 +1294,60 @@ function clusterTrips(list) {
 
 /* ---------- render ---------- */
 
+const IS_TOUCH = matchMedia('(pointer: coarse)').matches;
+
+/* The blank bands above and below the map at full zoom-out are a consequence of
+   Web Mercator: the projection stops at about 85 degrees, so the world is a
+   square, and a square can't fill a portrait screen. Zooming out far enough
+   makes the map narrower than the window and the leftover is empty canvas.
+
+   The world is 256 * 2^zoom pixels tall, so the smallest zoom that still covers
+   the container is log2(height / 256). Clamping there means you can never reach
+   the level where the gaps appear. */
+function clampMinZoom() {
+  const h = map.getSize().y;
+  // Whole numbers, to match zoomSnap — a fractional floor would just get
+  // rounded anyway and makes the limit harder to reason about.
+  map.setMinZoom(Math.max(0, Math.ceil(Math.log2(Math.max(1, h) / 256))));
+}
+
 function build() {
   if (!map) {
-    map = L.map('map', { zoomControl: true, worldCopyJump: true });
+    map = L.map('map', {
+      zoomControl: true,
+      worldCopyJump: true,
+      zoomAnimation: true,
+      // Whole-number zoom steps. Fractional levels force the browser to scale
+      // every tile, which is what makes a pinch feel soft and arrive blurry.
+      zoomSnap: 1,
+      wheelPxPerZoomLevel: 120,
+      // Stop the map being dragged off the top or bottom of the world into
+      // empty gray. Longitude stays free so it still wraps around.
+      maxBounds: L.latLngBounds([-85, -Infinity], [85, Infinity]),
+      maxBoundsViscosity: 1.0
+    });
+
     L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; OpenStreetMap &copy; CARTO', maxZoom: 19
+      attribution: '&copy; OpenStreetMap &copy; CARTO',
+      maxZoom: 19,
+      // Don't fetch tiles for every intermediate frame of a zoom — request them
+      // once the gesture settles. This is most of the "takes a second" feeling.
+      updateWhenZooming: false,
+      updateWhenIdle: IS_TOUCH,
+      // Hold a wider ring of tiles around the viewport so a small pan or a zoom
+      // back out reuses what's already there instead of going to the network.
+      keepBuffer: 4,
+      crossOrigin: true
     }).addTo(map);
+
+    clampMinZoom();
+    // Rotating the phone changes the container; Leaflet needs telling, and the
+    // minimum zoom has to be recomputed for the new height.
+    let resizeTimer;
+    addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => { map.invalidateSize(); clampMinZoom(); }, 150);
+    });
   }
   layers.forEach(l => map.removeLayer(l));
   layers = [];
