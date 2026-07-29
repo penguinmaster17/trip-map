@@ -291,6 +291,9 @@
     #mMenu.open { display: flex; }
     #mMenu button { text-align: left; padding: 10px 14px; }
 
+    /* Sit above the bottom navigation rather than on top of it. */
+    #playbar { bottom: calc(74px + env(safe-area-inset-bottom, 0px)); }
+
     #intro { z-index: 1200; }
     #drop { padding: 32px 20px; }
     #drop h2 { font-size: 17px; }
@@ -1518,6 +1521,9 @@ function startPlayback(trip) {
   map.fitBounds(L.latLngBounds(trip.photos.map(p => [p.lat, p.lon])),
     { padding: [70, 70], maxZoom: 15 });
 
+  // Tapping the map is the other obvious way to say "I'm done watching".
+  map.once('click', stopPlayback);
+
   playback.raf = requestAnimationFrame(playFrame);
 }
 
@@ -1575,15 +1581,28 @@ function playFrame(now) {
   pb.raf = requestAnimationFrame(playFrame);
 }
 
+/* When the route finishes, hold the completed line on screen for a moment and
+   then clear away. Leaving the bar up was worse than useless on a phone — it
+   parks itself over the navigation and there's no obvious reason it's still
+   there. Replaying is one tap on the trip's own Play button. */
 function finishPlayback() {
   if (!playback) return;
   playback.paused = true;
+  playback.finished = true;
   playPauseB.textContent = 'Replay';
+  playSub.textContent = 'Trip complete';
+
+  playback.dismiss = setTimeout(() => {
+    // Only if the user hasn't picked it back up in the meantime.
+    if (playback && playback.finished) stopPlayback();
+  }, 2600);
 }
 
 function stopPlayback() {
   if (!playback) return;
   cancelAnimationFrame(playback.raf);
+  clearTimeout(playback.dismiss);
+  map.off('click', stopPlayback);
   map.removeLayer(playback.line);
   map.removeLayer(playback.head);
   playback = null;
@@ -1595,6 +1614,8 @@ function stopPlayback() {
 playPauseB.addEventListener('click', () => {
   if (!playback) return;
   if (playback.t >= playback.total) {       // finished — start again
+    clearTimeout(playback.dismiss);         // cancel the auto-dismiss
+    playback.finished = false;
     playback.t = 0;
     playback.shownIndex = -1;
     playback.paused = false;
@@ -1618,6 +1639,8 @@ document.getElementById('playStop').addEventListener('click', stopPlayback);
 
 document.getElementById('playTrack').addEventListener('click', e => {
   if (!playback) return;
+  clearTimeout(playback.dismiss);
+  playback.finished = false;
   const r = e.currentTarget.getBoundingClientRect();
   playback.t = Math.min(playback.total, Math.max(0, (e.clientX - r.left) / r.width * playback.total));
   playback.shownIndex = -1;
