@@ -612,7 +612,7 @@ async function readExif(file) {
   const t0 = performance.now();
   try {
     x = await exifr.parse(file, PARSE_OPTS);
-  } catch (_) { /* format not recognised — the HEIC fallback below may still work */ }
+  } catch (_) { /* format not recognized — the HEIC fallback below may still work */ }
 
   if (!x || (x.latitude == null && !x.DateTimeOriginal)) {
     try {
@@ -695,7 +695,7 @@ async function ingest(all) {
 
    The identity of a photo is its filename, byte size and capture time. Photos
    are immutable, so that triple is stable: re-importing a folder you have
-   already added is recognised and skipped rather than duplicated. */
+   already added is recognized and skipped rather than duplicated. */
 
 const DB_NAME = 'trip-map', DB_VERSION = 1, STORE = 'photos';
 
@@ -722,7 +722,7 @@ function idbRequest(req) {
 }
 
 // Dates don't survive a JSON round trip, so time is stored as epoch milliseconds
-// and revived on the way out. Coordinates are normalised here too, which means
+// and revived on the way out. Coordinates are normalized here too, which means
 // a camera's zeroed GPS tags never reach the database in the first place.
 function toRecord(p) {
   const whenMs = p.when ? +p.when : null;

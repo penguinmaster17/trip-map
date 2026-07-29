@@ -11,7 +11,7 @@ The photos never leave the machine — there is nowhere for them to go.
 
 Open `index.html` and drag a folder of photos onto the page, or click to pick one.
 
-- **Map** — one coloured route per trip, pins numbered in time order. Zoomed out,
+- **Map** — one colored route per trip, pins numbered in time order. Zoomed out,
   nearby photos collapse into counted clusters; zoom past 17 and the individual
   pins return.
 - **Sidebar** — trips, each expanding into days, each day into photos. Click a
@@ -26,7 +26,7 @@ IndexedDB, a database inside the browser. Nothing is uploaded.
 
 A photo's identity is `filename | byte size | capture time`. Photos are
 immutable, so that triple is stable and re-importing a folder you have already
-added is recognised and skipped:
+added is recognized and skipped:
 
 ```
 import 1 (Athens, 3 photos)      -> added 3, known 0
@@ -74,9 +74,9 @@ them; the merge skips anything already present.
 | File | Purpose |
 |---|---|
 | `index.html` | The whole app — markup, styles, logic |
-| `cities.js` | 46,548 place names for labelling trips, offline |
+| `cities.js` | 46,548 place names for labeling trips, offline |
 | `sw.js` | Service worker; caches the app for offline use |
-| `manifest.json` | Web app manifest — name, colours, icons |
+| `manifest.json` | Web app manifest — name, colors, icons |
 | `probe.html` | Diagnostic page: dumps raw EXIF per photo, exports CSV |
 
 `index.html` needs `cities.js` beside it. Both must be deployed together.
@@ -132,6 +132,6 @@ npm install all-the-cities
 node build-cities.js
 ```
 
-Neighbourhood-level entries (GeoNames feature code `PPLX`) are excluded —
+Neighborhood-level entries (GeoNames feature code `PPLX`) are excluded —
 without that filter central Barcelona resolves to "Eixample" and downtown San
 Francisco to "Chinatown".

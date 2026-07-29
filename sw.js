@@ -3,7 +3,7 @@
  * The point of this file is that the app opens without a connection. Your photo
  * library already lives in IndexedDB on the device, so once the code is cached
  * there is genuinely nothing left that needs the network — which matters when
- * you're abroad on aeroplane mode and want to look at where you've been.
+ * you're abroad on airplane mode and want to look at where you've been.
  *
  * Bump CACHE_VERSION whenever index.html or cities.js changes, otherwise
  * returning visitors keep getting the old cached copy.
@@ -14,7 +14,7 @@ const TILE_CACHE    = 'trip-map-tiles-v1';
 const MAX_TILES     = 400;   // roughly a few cities' worth at the zooms you use
 
 // The app itself. cities.js is 1.2 MB, which is the bulk of it, but caching the
-// place names is what lets trips still be labelled offline.
+// place names is what lets trips still be labeled offline.
 const APP_SHELL = [
   './',
   './index.html',
