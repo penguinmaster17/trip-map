@@ -119,6 +119,30 @@
   .leaflet-popup-content span { color: #666; font-size: 12px; }
 
   .empty { padding: 30px 16px; color: var(--muted); text-align: center; font-size: 13px; }
+
+  .picks { display: flex; gap: 8px; justify-content: center; margin: 18px 0 0; flex-wrap: wrap; }
+  .picks button { padding: 9px 16px; }
+
+  /* ---- narrow screens ----
+     The 320px sidebar beside a map only works on a desktop. On a phone the two
+     stack, map first, and the header is allowed to wrap rather than overflow. */
+  @media (max-width: 720px) {
+    header { flex-wrap: wrap; gap: 8px 10px; padding: 9px 12px; }
+    header h1 { font-size: 14px; }
+    header .stats { font-size: 12px; order: 3; flex-basis: 100%; }
+    header .spacer { display: none; }
+    button { padding: 7px 11px; font-size: 12.5px; }
+
+    main { flex-direction: column; }
+    #map  { height: 55vh; flex: none; }
+    #side {
+      width: auto; flex: 1; border-right: none;
+      border-top: 1px solid var(--line); overflow-y: auto;
+    }
+    #drop { padding: 32px 20px; }
+    #drop h2 { font-size: 17px; }
+    .picks button { flex: 1; min-width: 140px; }
+  }
 </style>
 </head>
 <body>
@@ -143,11 +167,19 @@
   <div id="drop">
     <h2>Drag a folder of photos here</h2>
     <p>Reads GPS and timestamps, plots your route, groups it by day.</p>
+    <div class="picks">
+      <button id="pickFolder">Choose a folder</button>
+      <button id="pickPhotos">Choose photos</button>
+    </div>
     <p class="note">
       Photos are added to your existing library, never replacing it. Everything
       runs in this tab — no upload, no server, nothing leaves your machine.
     </p>
+    <!-- Two inputs on purpose. Folder selection needs webkitdirectory, which iOS
+         doesn't support — on a phone that input can come back empty, so there has
+         to be a plain multi-file picker as well. -->
     <input type="file" id="picker" webkitdirectory directory multiple hidden>
+    <input type="file" id="photoPicker" accept="image/*" multiple hidden>
   </div>
 </div>
 
@@ -259,13 +291,35 @@ const side   = document.getElementById('side');
 const statsEl= document.getElementById('stats');
 const resetBt= document.getElementById('reset');
 
-drop.addEventListener('click', () => { if (!busy) picker.click(); });
-picker.addEventListener('change', async e => {
+const photoPicker = document.getElementById('photoPicker');
+
+function openPicker(input) {
+  if (!busy) input.click();
+}
+
+drop.addEventListener('click', e => {
+  if (e.target.closest('button')) return;   // the two buttons handle themselves
+  openPicker(picker);
+});
+document.getElementById('pickFolder').addEventListener('click', e => {
+  e.stopPropagation(); openPicker(picker);
+});
+document.getElementById('pickPhotos').addEventListener('click', e => {
+  e.stopPropagation(); openPicker(photoPicker);
+});
+
+async function handlePicked(e) {
   if (busy) return;
+  const files = [...e.target.files];
+  e.target.value = '';           // so picking the same photos twice still fires
+  if (!files.length) return;
   busy = true;
   skipped = 0;
-  try { await ingest([...e.target.files]); } finally { busy = false; }
-});
+  try { await ingest(files); } finally { busy = false; }
+}
+
+picker.addEventListener('change', handlePicked);
+photoPicker.addEventListener('change', handlePicked);
 resetBt.addEventListener('click', () => { intro.classList.remove('hidden'); });
 
 /* ---------- library controls ---------- */
@@ -562,11 +616,17 @@ async function readExif(file) {
 async function ingest(all) {
   // The drag-and-drop path already filtered by name; this catches the picker,
   // which hands over the whole folder listing including videos and documents.
-  const files = all.filter(f => IMAGE_RE.test(f.name) && !f.name.startsWith('.'));
+  // Filename alone isn't enough on iOS — the photo picker can hand back a file
+  // whose name carries no useful extension, so the MIME type gets a vote too.
+  const files = all.filter(f =>
+    !f.name.startsWith('.') &&
+    (IMAGE_RE.test(f.name) || /^image\//i.test(f.type || '')));
   skipped += all.length - files.length;
 
   if (!files.length) {
-    drop.querySelector('h2').textContent = 'No photos found — try another folder';
+    drop.querySelector('h2').textContent = all.length
+      ? `Nothing readable in those ${all.length} file${all.length === 1 ? '' : 's'}`
+      : 'Nothing came back from the picker — try "Choose photos"';
     return;
   }
 
@@ -944,7 +1004,14 @@ function renderSidebar() {
       <div class="trip-head">
         <span class="swatch" style="background:var(--muted)"></span>
         <span class="trip-title">Unplaced
-          <small>${unplaced.length} photo${unplaced.length === 1 ? '' : 's'} with no coordinates</small>
+          <small>${unplaced.length} photo${unplaced.length === 1 ? '' : 's'} with no coordinates${
+            // Everything unplaced and nothing on the map is the signature of iOS
+            // removing location data on its way out of the photo picker, rather
+            // than of photos that genuinely lack it.
+            !photos.length && unplaced.length
+              ? '<br>Every photo came through without a location. On iPhone that ' +
+                'usually means iOS stripped it — check the picker for a Location option.'
+              : ''}</small>
         </span>
       </div>
       <div class="trip-body">${
