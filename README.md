@@ -52,15 +52,37 @@ one city is just sleep, so time only splits a trip after a gap long enough that
 you were plainly doing something else. Barcelona → Girona stays one trip;
 Barcelona → Madrid does not.
 
+## Installing it on a phone
+
+Open the deployed site and use **Add to Home Screen** — Share menu on iOS,
+the browser menu on Android. It then launches full-screen with its own icon and
+works offline, because a service worker caches the app and the place-name table.
+Your library is already local, so once cached there is nothing left that needs a
+connection.
+
+On iOS, use **Choose photos** rather than the folder picker: `webkitdirectory`
+isn't supported there. Location data does survive the iOS photo picker when
+selecting from the library, though photos captured through the picker itself are
+reported to lose it.
+
+Phone and laptop keep separate libraries — browser storage is per device, and
+nothing is uploaded. Use Export on one and Import on the other to move between
+them; the merge skips anything already present.
+
 ## Files
 
 | File | Purpose |
 |---|---|
 | `index.html` | The whole app — markup, styles, logic |
 | `cities.js` | 46,548 place names for labelling trips, offline |
+| `sw.js` | Service worker; caches the app for offline use |
+| `manifest.json` | Web app manifest — name, colours, icons |
 | `probe.html` | Diagnostic page: dumps raw EXIF per photo, exports CSV |
 
 `index.html` needs `cities.js` beside it. Both must be deployed together.
+
+**Bump `CACHE_VERSION` in `sw.js` whenever you change `index.html` or
+`cities.js`** — otherwise returning visitors keep being served the cached copy.
 
 Third-party code is loaded from CDNs at runtime: Leaflet, Leaflet.markercluster,
 and exifr.

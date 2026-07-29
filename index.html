@@ -2,8 +2,20 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Trip Map</title>
+<meta name="description" content="Plots your travel routes from the GPS coordinates in your own photos. Everything stays on your device.">
+
+<!-- Installable web app -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#141a28">
+<link rel="icon" href="icon-192.png" sizes="192x192">
+<!-- iOS ignores the manifest's icons and reads this instead -->
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Trip Map">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
 <style>
@@ -32,7 +44,13 @@
   header {
     display: flex; align-items: center; gap: 14px;
     padding: 10px 16px; border-bottom: 1px solid var(--line); flex: none;
+    /* Launched from the home screen there is no browser chrome, so the header
+       sits under the status bar and notch unless it accounts for them. */
+    padding-top: calc(10px + env(safe-area-inset-top, 0px));
+    padding-left: calc(16px + env(safe-area-inset-left, 0px));
+    padding-right: calc(16px + env(safe-area-inset-right, 0px));
   }
+  #side { padding-bottom: env(safe-area-inset-bottom, 0px); }
   header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
   header .stats { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
   header .spacer { flex: 1; }
@@ -1060,6 +1078,16 @@ function escapeHtml(s) {
     console.warn('could not restore library:', err);
   }
 })();
+
+/* Register the service worker so the app opens offline once it has been
+   visited. Requires a secure context — opening index.html straight off disk
+   won't register one, which is expected and harmless. */
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js')
+      .catch(err => console.warn('service worker not registered:', err));
+  });
+}
 </script>
 </body>
 </html>
