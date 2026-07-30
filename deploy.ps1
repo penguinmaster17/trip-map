@@ -1,10 +1,12 @@
 <#
-    Trip Map — one-shot deploy
+    Trip Map - one-shot deploy
 
         .\deploy.ps1                       push whatever is already committed
         .\deploy.ps1 "fix the thing"       also commit any pending changes first
 
     Use this when you don't have the watcher running and just want to ship.
+
+    Keep this file plain ASCII - see the note in watch-deploy.ps1.
 #>
 
 param([string]$Message)
@@ -29,7 +31,7 @@ if ($dirty) {
 
 $ahead = [int](git rev-list --count '@{u}..HEAD' 2>$null)
 if ($ahead -eq 0) {
-    Write-Host "Nothing to push — already up to date." -ForegroundColor Gray
+    Write-Host "Nothing to push - already up to date." -ForegroundColor Gray
     exit 0
 }
 
@@ -38,6 +40,6 @@ git push
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host ""
-    Write-Host "Pushed. Vercel is building — live in about 30 seconds." -ForegroundColor Green
+    Write-Host "Pushed. Vercel is building - live in about 30 seconds." -ForegroundColor Green
     Write-Host "https://trip-map-henna.vercel.app/" -ForegroundColor Cyan
 }

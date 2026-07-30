@@ -1,5 +1,5 @@
 <#
-    Trip Map — deploy watcher
+    Trip Map - deploy watcher
 
     Leave this running in a PowerShell window. It watches for commits that
     haven't been pushed yet and pushes them, which triggers a Vercel deploy.
@@ -7,12 +7,17 @@
         .\watch-deploy.ps1
 
     Why this exists: Claude can edit files and commit them, but it runs in an
-    isolated Linux sandbox with no access to your GitHub credentials — those live
+    isolated Linux sandbox with no access to your GitHub credentials - those live
     in Windows Credential Manager. This script runs on your machine, where the
     credentials already are, so the two halves meet in the middle.
 
     It only pushes commits that already exist. It never commits for you, so
     half-finished edits sitting in the folder can't get shipped by accident.
+
+    NOTE: this file is deliberately plain ASCII. Windows PowerShell 5.1 reads a
+    .ps1 without a byte-order mark using the system codepage, where the bytes of
+    a UTF-8 dash decode to a smart quote - which PowerShell treats as a string
+    delimiter, so the script fails to parse. Keep punctuation ASCII here.
 
     Ctrl+C to stop.
 #>
@@ -66,14 +71,14 @@ while ($true) {
 
             $output = git push 2>&1
             if ($LASTEXITCODE -eq 0) {
-                Write-Stamp "pushed — Vercel is building" 'Green'
+                Write-Stamp "pushed - Vercel is building" 'Green'
             }
             else {
                 Write-Stamp "push failed:" 'Red'
                 $output | ForEach-Object { Write-Host "           $_" -ForegroundColor DarkRed }
                 # Most likely cause is the remote having commits we don't.
                 if ($output -match 'rejected|non-fast-forward|fetch first') {
-                    Write-Stamp "the remote is ahead — run: git pull --rebase" 'Yellow'
+                    Write-Stamp "the remote is ahead - run: git pull --rebase" 'Yellow'
                 }
             }
         }
