@@ -64,7 +64,7 @@
     <thead><tr>
       <th>#</th><th>File</th><th>Ext</th><th>Size</th>
       <th>Latitude</th><th>Longitude</th><th>Timestamp</th><th>TZ offset</th>
-      <th>Camera</th><th>ms</th><th>Note</th>
+      <th>Camera</th><th>Orient</th><th>ms</th><th>Note</th>
     </tr></thead>
     <tbody></tbody>
   </table>
@@ -161,6 +161,7 @@ const PARSE_OPTS = {
 async function readOne(file) {
   const t0 = performance.now();
   let lat = null, lon = null, when = null, tz = null, camera = null, note = '';
+  let orient = null;
   let x = null, rescued = false;
 
   try {
@@ -187,6 +188,9 @@ async function readOne(file) {
     when = x.DateTimeOriginal || x.CreateDate || x.ModifyDate || null;
     tz = x.OffsetTimeOriginal || null;
     camera = [x.Make, x.Model].filter(Boolean).join(' ') || null;
+    // 1 means upright. 6 and 8 are the quarter turns a phone writes for a
+    // portrait shot — the pixels stay landscape and this tag says which way up.
+    orient = x.Orientation != null ? String(x.Orientation) : null;
   } else if (!note) {
     note = 'no EXIF block';
   }
@@ -201,7 +205,7 @@ async function readOne(file) {
     base: file.name,
     ext: (file.name.match(/\.[^.]+$/) || [''])[0].toLowerCase(),
     size: file.size,
-    lat, lon, when, tz, camera,
+    lat, lon, when, tz, camera, orient,
     ms: +(performance.now() - t0).toFixed(1),
     note
   };
@@ -265,6 +269,7 @@ function render() {
       <td class="${r.when ? '' : 'no'}">${r.when ? fmtDate(r.when) : '—'}</td>
       <td class="${r.tz ? '' : 'no'}">${r.tz || '—'}</td>
       <td class="${r.camera ? '' : 'no'}">${esc(r.camera || '—')}</td>
+      <td class="${r.orient ? '' : 'no'}">${esc(r.orient || '—')}</td>
       <td>${r.ms}</td>
       <td class="${/^ERROR/.test(r.note) ? 'err' : 'no'}">${esc(r.note)}</td>
     </tr>`).join('');
@@ -353,9 +358,9 @@ document.getElementById('copy').addEventListener('click', async e => {
 
 document.getElementById('csv').addEventListener('click', () => {
   const q = s => `"${String(s == null ? '' : s).replace(/"/g, '""')}"`;
-  const csv = ['path,ext,bytes,lat,lon,timestamp,tz_offset,camera,parse_ms,note']
+  const csv = ['path,ext,bytes,lat,lon,timestamp,tz_offset,camera,orientation,parse_ms,note']
     .concat(results.map(r => [r.name, r.ext, r.size, r.lat ?? '', r.lon ?? '',
-      fmtDate(r.when) ?? '', r.tz ?? '', r.camera ?? '', r.ms, r.note].map(q).join(',')))
+      fmtDate(r.when) ?? '', r.tz ?? '', r.camera ?? '', r.orient ?? '', r.ms, r.note].map(q).join(',')))
     .join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
