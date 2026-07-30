@@ -62,7 +62,10 @@
   button.danger:hover { border-color: #dc2626; color: #dc2626; }
   header .stats b { font-weight: 600; color: var(--fg); }
 
-  main { flex: 1; display: flex; min-height: 0; }
+  /* Positioned so the play bar and photo card are placed against the map area
+     rather than the whole viewport. Without this they escape to the initial
+     containing block on desktop and can overlap the sidebar. */
+  main { flex: 1; display: flex; min-height: 0; position: relative; }
   #side {
     width: 320px; flex: none; border-right: 1px solid var(--line);
     overflow-y: auto; background: var(--panel);
@@ -258,7 +261,10 @@
      any leftover background to see. */
   #playphoto {
     position: absolute; z-index: 1050;
-    pointer-events: auto; cursor: pointer;   /* tap to hold on this photo */
+    /* Only catches taps while it is actually visible. Left at 'auto' it stayed
+       in the DOM at zero opacity, above the trip sheet, silently swallowing
+       every tap that landed on it — including the Play button underneath. */
+    pointer-events: none; cursor: pointer;
     left: 50%; top: 50%;
     width: min(74%, 620px);
     aspect-ratio: var(--ar, 3 / 4);
@@ -269,7 +275,10 @@
     border-radius: 10px; overflow: hidden;
     box-shadow: 0 16px 54px rgba(0,0,0,.55), 0 0 0 4px rgba(255,255,255,.96);
   }
-  #playphoto.on { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  #playphoto.on {
+    opacity: 1; transform: translate(-50%, -50%) scale(1);
+    pointer-events: auto;   /* tap to hold, only while showing */
+  }
   #playphoto.held { box-shadow: 0 16px 54px rgba(0,0,0,.55), 0 0 0 4px var(--accent); }
   #playphoto .held-tag {
     position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
@@ -2129,9 +2138,13 @@ function startPlayback(trip) {
   stopPlayback();
   if (trip.photos.length < 2) { zoomTo(trip.photos); return; }
 
+  // A trip whose photos were all taken in one spot collapses to a single stop.
+  // That still plays — you get the photo — rather than silently doing nothing.
   const stops = buildStops(trip.photos);
-  if (stops.length < 2) { zoomTo(trip.photos); return; }
+  if (!stops.length) return;
   const timeline = buildTimeline(stops);
+  console.log(`playback: ${trip.photos.length} photos, ${stops.length} stops, ` +
+              `${(timeline.total / 1000).toFixed(1)}s`);
 
   /* Everything for the replay goes onto one canvas.
 
@@ -2185,7 +2198,8 @@ function startPlayback(trip) {
     { padding: [70, 70], maxZoom: 15 });
 
   // Tapping the map is the other obvious way to say "I'm done watching".
-  map.once('click', stopPlayback);
+  // Registered a tick late so the tap that started playback can't also end it.
+  setTimeout(() => { if (playback) map.once('click', stopPlayback); }, 0);
 
   playback.raf = requestAnimationFrame(playFrame);
 }
