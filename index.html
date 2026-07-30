@@ -130,32 +130,42 @@
   }
   .thumb.empty { background: rgba(127,127,127,.12); }
 
-  /* ---- full-screen photo ---- */
+  /* ---- full-screen photo ----
+     A grid, not a centered flex column. The image gets one row that is whatever
+     height is left over and centers itself inside it; the caption gets its own
+     row at the bottom. Previously the image and the caption fought for space in
+     the same flex flow, so the photo ended up small and sitting off-center. */
   #viewer {
     position: fixed; inset: 0; z-index: 2000; display: none;
-    background: rgba(8,10,14,.94); align-items: center; justify-content: center;
-    flex-direction: column; gap: 14px; padding: 24px;
-    padding-top: calc(24px + env(safe-area-inset-top, 0px));
-    padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+    background: #0a0c10;
+    grid-template-rows: 1fr auto;
   }
-  #viewer.open { display: flex; }
+  #viewer.open { display: grid; }
+  #viewerBody {
+    min-height: 0; display: grid; place-items: center;
+    padding: calc(56px + env(safe-area-inset-top, 0px)) 10px 10px;
+  }
   #viewer img {
-    max-width: 100%; max-height: 72vh; border-radius: 8px;
-    /* Thumbnails are small; let the browser scale them smoothly rather than
-       showing a hard pixel grid. */
-    image-rendering: auto; box-shadow: 0 8px 40px rgba(0,0,0,.5);
+    max-width: 100%; max-height: 100%;
+    width: auto; height: auto; object-fit: contain;
+    border-radius: 4px; display: block;
   }
-  #viewer .meta { color: #e8eaed; text-align: center; font-size: 13px; line-height: 1.6; }
-  #viewer .meta b { display: block; font-size: 15px; margin-bottom: 4px; }
+  #viewer .meta {
+    color: #e8eaed; text-align: center; font-size: 13px; line-height: 1.55;
+    padding: 14px 18px calc(18px + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid rgba(255,255,255,.08);
+  }
+  #viewer .meta b { display: block; font-size: 15px; font-weight: 600; margin-bottom: 3px; }
   #viewer .meta span { color: #9aa1ab; }
-  #viewer .hint { color: #6b7280; font-size: 12px; max-width: 380px; text-align: center; }
+  #viewer .meta .hint { display: block; color: #5d646f; font-size: 11.5px; margin-top: 6px; }
   #viewer .close {
-    position: absolute; top: calc(14px + env(safe-area-inset-top, 0px)); right: 16px;
-    background: rgba(255,255,255,.1); border-color: transparent; color: #fff;
+    position: absolute; top: calc(12px + env(safe-area-inset-top, 0px)); right: 14px;
+    z-index: 2; background: rgba(255,255,255,.12); border-color: transparent;
+    color: #fff; backdrop-filter: blur(8px);
   }
   #viewer .none {
-    color: #6b7280; border: 1px dashed #39404d; border-radius: 10px;
-    padding: 48px 32px; font-size: 13px;
+    color: #6b7280; border: 1px solid #262b34; border-radius: 12px;
+    padding: 52px 34px; font-size: 13px;
   }
 
   #unplaced .trip-head { cursor: default; }
@@ -279,9 +289,13 @@
 
     #sheetTop {
       display: block; position: sticky; top: 0; z-index: 2;
-      background: var(--panel); padding: 8px 14px 10px;
+      background: var(--panel); padding: 10px 14px 10px;
       border-bottom: 1px solid var(--line);
+      /* The handle is a drag surface, so the browser must not claim the gesture
+         for scrolling, and a long press shouldn't select the text under it. */
+      touch-action: none; user-select: none; cursor: grab;
     }
+    #sheetTop:active { cursor: grabbing; }
     #sheetTop .grip {
       width: 38px; height: 4px; border-radius: 2px; margin: 0 auto 8px;
       background: var(--line);
@@ -360,6 +374,7 @@
 <div id="viewer">
   <button class="close" id="viewerClose">Close</button>
   <div id="viewerBody"></div>
+  <div class="meta" id="viewerMeta"></div>
 </div>
 
 <div id="intro">
@@ -670,7 +685,45 @@ function toggleSheet() {
 const closeMenu = () => mMenu.classList.remove('open');
 
 mTrips.addEventListener('click', () => { closeMenu(); toggleSheet(); });
-document.getElementById('sheetTop').addEventListener('click', closeSheet);
+
+/* Three ways out of the sheet, because tapping the same button again is the
+   least discoverable of them: drag the handle down, tap the map behind it, or
+   tap the handle. */
+
+const sheetTop = document.getElementById('sheetTop');
+
+// Tapping the map dismisses the sheet. Registered on the container rather than
+// the Leaflet map so it fires even when the tap lands on a marker.
+document.getElementById('map').addEventListener('pointerdown', () => {
+  if (document.body.classList.contains('sheet-open')) closeSheet();
+}, true);
+
+let drag = null;
+sheetTop.addEventListener('pointerdown', e => {
+  drag = { y0: e.clientY, dy: 0, moved: false };
+  sheetTop.setPointerCapture(e.pointerId);
+  side.style.transition = 'none';
+});
+
+sheetTop.addEventListener('pointermove', e => {
+  if (!drag) return;
+  drag.dy = Math.max(0, e.clientY - drag.y0);   // downward only
+  if (drag.dy > 3) drag.moved = true;
+  side.style.transform = `translateY(${drag.dy}px)`;
+});
+
+function endDrag() {
+  if (!drag) return;
+  side.style.transition = '';
+  side.style.transform = '';
+  // Past a quarter of the sheet's height, treat it as a dismiss. A short flick
+  // counts too, so you don't have to drag the whole way down.
+  if (drag.dy > side.offsetHeight * 0.25 || (drag.moved && drag.dy > 70)) closeSheet();
+  else if (!drag.moved) closeSheet();            // a plain tap on the handle
+  drag = null;
+}
+sheetTop.addEventListener('pointerup', endDrag);
+sheetTop.addEventListener('pointercancel', endDrag);
 
 document.getElementById('mMore').addEventListener('click', e => {
   e.stopPropagation();
@@ -908,8 +961,13 @@ function hasFix(p) {
    HEIC natively on iOS and Safari but throws on desktop Chrome, which is fine:
    a photo simply ends up without a thumbnail rather than breaking the import. */
 
-const THUMB_PX = 200;      // longest edge
-const THUMB_QUALITY = 0.72;
+/* 200px was enough for a 34px row and useless full-screen — an image that small
+   either renders postage-stamp sized or gets upscaled into mush. 900px on the
+   long edge looks right filling a phone screen and still costs well under
+   100 KB, and the sidebar rows just scale it down. */
+const THUMB_PX = 900;
+const THUMB_QUALITY = 0.74;
+const EMBEDDED_MIN_PX = 400;   // below this, an EXIF preview isn't worth keeping
 
 let canDecodeHeic = null;  // null = untested, then true/false. Tested once.
 
@@ -928,29 +986,47 @@ async function shrinkToBlob(source) {
     canvas.toBlob(resolve, 'image/jpeg', THUMB_QUALITY));
 }
 
+/* Decode first now, embedded EXIF second — the reverse of before.
+
+   An embedded EXIF preview is almost free but iPhones write them at 160x120,
+   which is fine for a row in a list and hopeless full-screen. Decoding gives a
+   900px image worth looking at. This runs sequentially in the second pass of an
+   import, so the memory cost is one image at a time rather than eight. */
 async function makeThumb(file, tiffBuffer) {
-  // 1. The embedded EXIF preview, if there is one. Nearly free.
+  const isHeic = /hei[cf]$/i.test(file.name);
+
+  if (!(canDecodeHeic === false && isHeic)) {
+    try {
+      const bitmap = await createImageBitmap(file);
+      const blob = await shrinkToBlob(bitmap);
+      bitmap.close();
+      if (isHeic) canDecodeHeic = true;
+      if (blob) return blob;
+    } catch (_) {
+      // Remember the failure so 10,000 HEICs don't each retry a decode this
+      // browser was never going to manage — desktop Chrome, mainly.
+      if (isHeic) canDecodeHeic = false;
+    }
+  }
+
+  // Fall back to whatever the file carries, if it's big enough to be worth it.
   try {
     const embedded = await exifr.thumbnail(tiffBuffer || file);
-    if (embedded && embedded.byteLength > 512) {
-      return new Blob([embedded], { type: 'image/jpeg' });
+    if (embedded && embedded.byteLength > 2048) {
+      const blob = new Blob([embedded], { type: 'image/jpeg' });
+      // Re-encode through the canvas so a large embedded preview gets capped
+      // and a small one is at least flagged as low quality by its size.
+      try {
+        const bmp = await createImageBitmap(blob);
+        const out = Math.max(bmp.width, bmp.height) >= EMBEDDED_MIN_PX
+          ? await shrinkToBlob(bmp) : blob;
+        bmp.close();
+        return out;
+      } catch (_) { return blob; }
     }
-  } catch (_) { /* no embedded preview — fall through */ }
+  } catch (_) {}
 
-  // 2. Decode and downscale. Only formats this browser understands.
-  if (canDecodeHeic === false && /hei[cf]$/i.test(file.name)) return null;
-  try {
-    const bitmap = await createImageBitmap(file);
-    const blob = await shrinkToBlob(bitmap);
-    bitmap.close();
-    if (/hei[cf]$/i.test(file.name)) canDecodeHeic = true;
-    return blob;
-  } catch (_) {
-    // Remember the failure so 10,000 HEICs don't each retry a decode that
-    // this browser was never going to manage.
-    if (/hei[cf]$/i.test(file.name)) canDecodeHeic = false;
-    return null;
-  }
+  return null;
 }
 
 async function readExif(file, wantThumb) {
@@ -1631,18 +1707,19 @@ function thumbEl(p) {
 
 const viewer = document.getElementById('viewer');
 const viewerBody = document.getElementById('viewerBody');
+const viewerMeta = document.getElementById('viewerMeta');
 
 function openViewer(p) {
   const url = thumbUrl(p);
-  viewerBody.innerHTML =
-    (url
-      ? `<img src="${url}" alt="">`
-      : `<div class="none">No preview stored for this photo</div>`) +
-    `<div class="meta"><b>${escapeHtml(p.name)}</b>` +
+  viewerBody.innerHTML = url
+    ? `<img src="${url}" alt="">`
+    : `<div class="none">No preview stored for this photo</div>`;
+  viewerMeta.innerHTML =
+    `<b>${escapeHtml(p.name)}</b>` +
     `<span>${p.when ? longDay(p.when) + ' · ' + clock(p.when) : 'no timestamp'}` +
-    (hasFix(p) ? `<br>${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}` : '<br>no coordinates') +
-    `</span></div>` +
-    `<div class="hint">Stored preview — search this filename in Photos for the original.</div>`;
+    (hasFix(p) ? ` · ${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}` : ' · no coordinates') +
+    `</span>` +
+    `<span class="hint">Stored preview — search this filename in Photos for the original.</span>`;
   viewer.classList.add('open');
 }
 
