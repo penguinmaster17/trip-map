@@ -235,6 +235,24 @@
   }
   #playbar .fill { height: 100%; width: 0; background: var(--accent); transition: width .1s linear; }
 
+  /* The photo shown while the dot is parked at a stop. Sits above centre so it
+     doesn't cover the dot, which is roughly mid-screen while the map follows. */
+  #playphoto {
+    position: absolute; z-index: 1050; pointer-events: none;
+    left: 50%; top: 32%;
+    transform: translate(-50%, -50%) scale(.94);
+    opacity: 0; transition: opacity .3s ease, transform .3s cubic-bezier(.32,.72,0,1);
+    max-width: min(58%, 330px); max-height: 42%;
+    border-radius: 10px; overflow: hidden; background: #000;
+    box-shadow: 0 8px 34px rgba(0,0,0,.45), 0 0 0 3px rgba(255,255,255,.9);
+  }
+  #playphoto.on { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  #playphoto img { display: block; width: 100%; height: 100%; object-fit: contain; }
+
+  @media (max-width: 720px) {
+    #playphoto { max-width: 68%; max-height: 38%; top: 30%; }
+  }
+
   /* The moving head of the animated route. */
   .route-head {
     width: 14px; height: 14px; border-radius: 50%;
@@ -359,6 +377,7 @@
     <div id="sideBody"><div class="empty">No photos loaded.</div></div>
   </div>
   <div id="map"></div>
+  <div id="playphoto"><img alt=""></div>
   <div id="playbar">
     <div class="row1">
       <button id="playPause">Pause</button>
@@ -1801,9 +1820,76 @@ document.addEventListener('keydown', e => {
    still tick past rather than vanishing. Sleeping now costs 1 second and the
    taxi across town costs 6.9. */
 
-const PLAY_TOTAL_MS = 22000;   // a whole trip, at 1x
-const SEG_BEAT      = 0.35;    // every photo gets this much weight regardless
+const PLAY_TOTAL_MS = 16000;   // time spent travelling, across a whole trip
+const SEG_BEAT      = 0.35;    // every hop gets this much weight regardless
 const segWeight = km => SEG_BEAT + Math.sqrt(Math.max(0, km));
+
+/* ---------- stops ----------
+   Standing in one place taking eight photos of the same thing is not eight
+   places visited. Consecutive photos close together in both space and time
+   collapse into a single stop, and only one of them gets shown.
+
+   75 m is roughly "same viewpoint" — wide enough to absorb GPS drift between
+   shots, narrow enough that walking to the next thing starts a new stop. The
+   time limit catches returning to the same spot later in the day: same place,
+   different moment, worth showing again. */
+const STOP_RADIUS_M = 75;
+const STOP_GAP_MIN  = 45;
+
+const DWELL_BUDGET_MS = 17000;  // total time given to photos across the trip
+const DWELL_MIN_MS    = 650;
+const DWELL_MAX_MS    = 1500;
+
+/* A long trip can easily have hundreds of stops, and pausing at every one turns
+   a replay into a five-minute slideshow. Above this many, the route still runs
+   through every stop but photos only appear at a selection of them.
+
+   Which ones: the stops where you took the most photos. How long you lingered
+   somewhere is the one signal in the data for how much you cared about it. */
+const MAX_PHOTO_STOPS = 28;
+const PASSTHROUGH_BUDGET_MS = 4000;   // total, across every stop without a photo
+
+/* Which photo represents a stop.
+
+   There is no way to judge composition from metadata, so this uses the one
+   signal that genuinely correlates: file size. Within a burst of the same scene
+   and format, the larger file is the more detailed one, because a soft or
+   motion-blurred frame has less high-frequency information and compresses
+   smaller. It is a proxy for sharpness, not for taste.
+
+   Where two frames are within 3% of each other the later one wins, on the
+   theory that you kept re-taking until you got the one you wanted. That does
+   mean the chosen frame is not always the strictly largest — a 2.35 MB shot
+   taken after a 2.40 MB one is treated as a tie and the later wins. */
+function pickRepresentative(photos) {
+  const withThumb = photos.filter(p => p.thumb);
+  const pool = withThumb.length ? withThumb : photos;
+  let best = pool[0];
+  for (const p of pool) {
+    if (p.size > best.size * 1.03) best = p;
+    else if (p.size > best.size * 0.97 && p.when > best.when) best = p;
+  }
+  return best;
+}
+
+function buildStops(photos) {
+  const stops = [];
+  for (const p of photos) {
+    const cur = stops[stops.length - 1];
+    if (cur) {
+      const metres = haversineKm(cur.lat, cur.lon, p.lat, p.lon) * 1000;
+      const mins = Math.abs(p.when - cur.lastWhen) / 60000;
+      if (metres <= STOP_RADIUS_M && mins <= STOP_GAP_MIN) {
+        cur.photos.push(p);
+        cur.lastWhen = p.when;
+        continue;
+      }
+    }
+    stops.push({ lat: p.lat, lon: p.lon, photos: [p], when: p.when, lastWhen: p.when });
+  }
+  for (const s of stops) s.rep = pickRepresentative(s.photos);
+  return stops;
+}
 
 const playbar    = document.getElementById('playbar');
 const playPlace  = document.getElementById('playPlace');
@@ -1816,29 +1902,85 @@ const playSpeedB = document.getElementById('playSpeed');
 let playback = null;
 const SPEEDS = [1, 2, 0.5];
 
-function buildSegments(ps) {
-  const segs = [];
+const playPhoto = document.getElementById('playphoto');
+const playPhotoImg = playPhoto.querySelector('img');
+
+/* Show the stop's representative photo, or clear it. Called every frame, so it
+   tracks what is already on screen and only touches the DOM on a change —
+   reassigning src each frame would restart the decode and kill the fade. */
+function showPlayPhoto(stop) {
+  const url = stop && stop.rep && thumbUrl(stop.rep);
+  if (url) {
+    if (playback.photoUp !== url) {
+      playback.photoUp = url;
+      playPhotoImg.src = url;
+    }
+    playPhoto.classList.add('on');
+  } else {
+    if (playback.photoUp !== false) playback.photoUp = false;
+    playPhoto.classList.remove('on');
+  }
+}
+
+/* The timeline alternates: pause at a stop while its photo is up, travel to the
+   next one, pause again. Travel keeps the distance-based pacing from before;
+   dwell time is shared out of a fixed budget so a trip with sixty stops doesn't
+   run for two minutes. */
+function buildTimeline(stops) {
+  // Decide which stops get a photo before working out how long each one lasts.
+  const featured = new Set();
+  if (stops.length <= MAX_PHOTO_STOPS) {
+    stops.forEach(s => featured.add(s));
+  } else {
+    stops.slice()
+      .sort((a, b) => b.photos.length - a.photos.length || a.when - b.when)
+      .slice(0, MAX_PHOTO_STOPS)
+      .forEach(s => featured.add(s));
+  }
+
+  const shown = Math.min(stops.length, MAX_PHOTO_STOPS) || 1;
+  const dwell = Math.min(DWELL_MAX_MS, Math.max(DWELL_MIN_MS, DWELL_BUDGET_MS / shown));
+
+  /* Stops without a photo still get a beat so the dot visibly arrives, but that
+     beat has to come out of a fixed budget too. At a fifth of a second each,
+     two thousand of them added seven minutes to the replay on their own. */
+  const passing = Math.max(0, stops.length - shown);
+  const beat = passing ? Math.min(200, PASSTHROUGH_BUDGET_MS / passing) : 0;
+
+  const weights = [];
   let weightTotal = 0;
-  for (let i = 1; i < ps.length; i++) {
-    const km = haversineKm(ps[i-1].lat, ps[i-1].lon, ps[i].lat, ps[i].lon);
-    const w = segWeight(km);
-    segs.push({ from: ps[i-1], to: ps[i], w });
+  for (let i = 1; i < stops.length; i++) {
+    const w = segWeight(haversineKm(stops[i-1].lat, stops[i-1].lon, stops[i].lat, stops[i].lon));
+    weights.push(w);
     weightTotal += w;
   }
+
+  const items = [];
   let at = 0;
-  for (const s of segs) {
-    s.start = at;
-    s.dur = (s.w / weightTotal) * PLAY_TOTAL_MS;
-    at += s.dur;
-  }
-  return segs;
+  stops.forEach((stop, i) => {
+    if (i > 0) {
+      const dur = weightTotal ? (weights[i-1] / weightTotal) * PLAY_TOTAL_MS : 0;
+      items.push({ type: 'travel', from: stops[i-1], to: stop, start: at, dur });
+      at += dur;
+    }
+    // A stop with no preview, or one not selected on a long trip, still gets a
+    // short beat so the dot visibly arrives rather than sailing straight past.
+    const hasPhoto = featured.has(stop) && stop.rep && stop.rep.thumb;
+    const d = hasPhoto ? dwell : beat;
+    items.push({ type: 'dwell', stop, index: i, start: at, dur: d, hasPhoto });
+    at += d;
+  });
+
+  return { items, total: at };
 }
 
 function startPlayback(trip) {
   stopPlayback();
   if (trip.photos.length < 2) { zoomTo(trip.photos); return; }
 
-  const segs = buildSegments(trip.photos);
+  const stops = buildStops(trip.photos);
+  if (stops.length < 2) { zoomTo(trip.photos); return; }
+  const timeline = buildTimeline(stops);
 
   /* Everything for the replay goes onto one canvas.
 
@@ -1854,7 +1996,7 @@ function startPlayback(trip) {
      still being drawn is a two-point line. */
   const canvas = L.canvas({ padding: 0.5 }).addTo(map);
 
-  const doneLine = L.polyline([[trip.photos[0].lat, trip.photos[0].lon]], {
+  const doneLine = L.polyline([[stops[0].lat, stops[0].lon]], {
     color: trip.color, weight: 4, opacity: .95,
     lineJoin: 'round', lineCap: 'round', smoothFactor: 1, renderer: canvas
   }).addTo(map);
@@ -1864,7 +2006,7 @@ function startPlayback(trip) {
     lineJoin: 'round', lineCap: 'round', renderer: canvas
   }).addTo(map);
 
-  const head = L.circleMarker([trip.photos[0].lat, trip.photos[0].lon], {
+  const head = L.circleMarker([stops[0].lat, stops[0].lon], {
     radius: 6, color: '#fff', weight: 2.5,
     fillColor: trip.color, fillOpacity: 1, renderer: canvas
   }).addTo(map);
@@ -1874,10 +2016,10 @@ function startPlayback(trip) {
   layers.forEach(l => { if (l instanceof L.Polyline) map.removeLayer(l); });
 
   playback = {
-    trip, segs, canvas, doneLine, liveLine, head,
+    trip, stops, items: timeline.items, canvas, doneLine, liveLine, head,
     t: 0, speed: 1, paused: false, last: performance.now(),
-    lastPan: 0, shownIndex: -1, doneUpto: -1,
-    total: segs.reduce((n, s) => n + s.dur, 0)
+    lastPan: 0, shownIndex: -1, doneUpto: -1, photoUp: false,
+    total: timeline.total
   };
 
   document.body.classList.add('playing');
@@ -1886,7 +2028,7 @@ function startPlayback(trip) {
   playSpeedB.textContent = '1×';
   closeSheet();
 
-  map.fitBounds(L.latLngBounds(trip.photos.map(p => [p.lat, p.lon])),
+  map.fitBounds(L.latLngBounds(stops.map(s => [s.lat, s.lon])),
     { padding: [70, 70], maxZoom: 15 });
 
   // Tapping the map is the other obvious way to say "I'm done watching".
@@ -1903,22 +2045,34 @@ function playFrame(now) {
   pb.last = now;                            // doesn't jump the whole route
   if (!pb.paused) pb.t = Math.min(pb.total, pb.t + dt * pb.speed);
 
-  // Which segment are we in, and how far through it?
-  let i = pb.segs.length - 1;
-  while (i > 0 && pb.t < pb.segs[i].start) i--;
-  const seg = pb.segs[i];
-  const f = seg.dur ? Math.min(1, Math.max(0, (pb.t - seg.start) / seg.dur)) : 1;
+  // Which item of the timeline are we in, and how far through it?
+  let i = pb.items.length - 1;
+  while (i > 0 && pb.t < pb.items[i].start) i--;
+  const item = pb.items[i];
+  const f = item.dur ? Math.min(1, Math.max(0, (pb.t - item.start) / item.dur)) : 1;
 
-  const lat = seg.from.lat + (seg.to.lat - seg.from.lat) * f;
-  const lon = seg.from.lon + (seg.to.lon - seg.from.lon) * f;
+  let lat, lon, stopIndex;
+  if (item.type === 'travel') {
+    lat = item.from.lat + (item.to.lat - item.from.lat) * f;
+    lon = item.from.lon + (item.to.lon - item.from.lon) * f;
+    stopIndex = pb.stops.indexOf(f > 0.5 ? item.to : item.from);
+    showPlayPhoto(null);
+  } else {
+    lat = item.stop.lat;
+    lon = item.stop.lon;
+    stopIndex = item.index;
+    showPlayPhoto(item.hasPhoto ? item.stop : null);
+  }
 
-  // The finished part of the route only changes when a segment is crossed.
-  if (i !== pb.doneUpto) {
-    pb.doneUpto = i;
-    pb.doneLine.setLatLngs(pb.trip.photos.slice(0, i + 1).map(p => [p.lat, p.lon]));
+  // The finished part of the route only changes when a stop is passed.
+  const drawnTo = item.type === 'travel' ? pb.stops.indexOf(item.from) : item.index;
+  if (drawnTo !== pb.doneUpto) {
+    pb.doneUpto = drawnTo;
+    pb.doneLine.setLatLngs(pb.stops.slice(0, drawnTo + 1).map(s => [s.lat, s.lon]));
   }
   // The part currently being drawn is just two points.
-  pb.liveLine.setLatLngs([[seg.from.lat, seg.from.lon], [lat, lon]]);
+  const from = item.type === 'travel' ? item.from : item.stop;
+  pb.liveLine.setLatLngs([[from.lat, from.lon], [lat, lon]]);
   pb.head.setLatLng([lat, lon]);
 
   /* Keep the head on screen without recentering every frame. Only nudge when it
@@ -1935,16 +2089,17 @@ function playFrame(now) {
     map.panTo([lat, lon], { animate: true, duration: 0.7, easeLinearity: 0.4 });
   }
 
-  const idx = f > 0.5 ? i + 1 : i;
-  if (idx !== pb.shownIndex) {
-    pb.shownIndex = idx;
-    const p = pb.trip.photos[idx];
-    const dayNo = new Set(pb.trip.photos.slice(0, idx + 1).map(q => dayKey(q.when))).size;
-    playPlace.textContent = nearestCity(p.lat, p.lon);
+  if (stopIndex !== pb.shownIndex && stopIndex >= 0) {
+    pb.shownIndex = stopIndex;
+    const stop = pb.stops[stopIndex];
+    const dayNo = new Set(pb.stops.slice(0, stopIndex + 1).map(s => dayKey(s.when))).size;
+    const shots = stop.photos.length;
+    playPlace.textContent = nearestCity(stop.lat, stop.lon);
     playSub.textContent =
-      `${longDay(p.when)} · ${clock(p.when)} — day ${dayNo} of ${pb.trip.days.length}` +
-      ` · photo ${idx + 1} of ${pb.trip.photos.length}`;
-    const url = thumbUrl(p);
+      `${longDay(stop.when)} · ${clock(stop.when)} — day ${dayNo} of ${pb.trip.days.length}` +
+      ` · stop ${stopIndex + 1} of ${pb.stops.length}` +
+      (shots > 1 ? ` · ${shots} photos here` : '');
+    const url = stop.rep && thumbUrl(stop.rep);
     playThumb.hidden = !url;
     if (url) playThumb.src = url;
   }
@@ -1977,8 +2132,9 @@ function stopPlayback() {
   cancelAnimationFrame(playback.raf);
   clearTimeout(playback.dismiss);
   map.off('click', stopPlayback);
-  map.removeLayer(playback.line);
-  map.removeLayer(playback.head);
+  playPhoto.classList.remove('on');
+  [playback.doneLine, playback.liveLine, playback.head, playback.canvas]
+    .forEach(l => { if (l) map.removeLayer(l); });
   playback = null;
   document.body.classList.remove('playing');
   playbar.classList.remove('on');
