@@ -257,7 +257,8 @@
      match. So a tall photo comes out tall, a wide one wide, and there is never
      any leftover background to see. */
   #playphoto {
-    position: absolute; z-index: 1050; pointer-events: none;
+    position: absolute; z-index: 1050;
+    pointer-events: auto; cursor: pointer;   /* tap to hold on this photo */
     left: 50%; top: 50%;
     width: min(74%, 620px);
     aspect-ratio: var(--ar, 3 / 4);
@@ -269,6 +270,14 @@
     box-shadow: 0 16px 54px rgba(0,0,0,.55), 0 0 0 4px rgba(255,255,255,.96);
   }
   #playphoto.on { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  #playphoto.held { box-shadow: 0 16px 54px rgba(0,0,0,.55), 0 0 0 4px var(--accent); }
+  #playphoto .held-tag {
+    position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+    background: var(--accent); color: #fff; font-size: 11.5px; font-weight: 600;
+    padding: 4px 11px; border-radius: 20px; opacity: 0; transition: opacity .2s;
+    pointer-events: none; white-space: nowrap;
+  }
+  #playphoto.held .held-tag { opacity: 1; }
   #playphoto img {
     display: block; width: 100%; height: 100%;
     object-fit: cover;   /* the box already matches the photo, so nothing crops */
@@ -408,7 +417,7 @@
     <div id="sideBody"><div class="empty">No photos loaded.</div></div>
   </div>
   <div id="map"></div>
-  <div id="playphoto"><img alt=""></div>
+  <div id="playphoto"><img alt=""><span class="held-tag">Holding — tap to continue</span></div>
   <div id="playbar">
     <div class="row1">
       <button id="playPause">Pause</button>
@@ -1964,6 +1973,16 @@ function applyPhotoRatio() {
 // Fires for images that weren't already decoded and cached.
 playPhotoImg.addEventListener('load', applyPhotoRatio);
 
+/* Tap the photo to hold on it. The replay stops where it is rather than jumping
+   anywhere, so tapping again carries straight on from the same stop. */
+playPhoto.addEventListener('click', e => {
+  e.stopPropagation();
+  if (!playback) return;
+  playback.paused = !playback.paused;
+  playPhoto.classList.toggle('held', playback.paused);
+  playPauseB.textContent = playback.paused ? 'Play' : 'Pause';
+});
+
 /* The timeline alternates: pause at a stop while its photo is up, travel to the
    next one, pause again. Travel keeps the distance-based pacing from before;
    dwell time is shared out of a fixed budget so a trip with sixty stops doesn't
@@ -2198,6 +2217,7 @@ playPauseB.addEventListener('click', () => {
   }
   playback.paused = !playback.paused;
   playPauseB.textContent = playback.paused ? 'Play' : 'Pause';
+  playPhoto.classList.toggle('held', playback.paused);   // keep the two in step
 });
 
 playSpeedB.addEventListener('click', () => {
