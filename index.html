@@ -869,7 +869,14 @@ async function resolveFiles(entries) {
 // exifr cannot sign the coordinate, so a western-hemisphere photo comes back as
 // +122 instead of -122 and lands on the wrong side of the planet. Always pick them.
 const PICK = ['DateTimeOriginal','CreateDate','ModifyDate',
-              'GPSLatitude','GPSLongitude','GPSLatitudeRef','GPSLongitudeRef'];
+              'GPSLatitude','GPSLongitude','GPSLatitudeRef','GPSLongitudeRef',
+              // Phones almost never rotate the pixels. They store the sensor
+              // frame as captured, landscape, and record how far to turn it in
+              // the Orientation tag. Ignore that tag and every portrait photo
+              // comes out on its side. The stored dimensions come along too, so
+              // we can tell whether the browser already applied the rotation.
+              'Orientation','ImageWidth','ImageHeight',
+              'ExifImageWidth','ExifImageHeight'];
 
 const PARSE_OPTS = { tiff: true, exif: true, gps: true, reviveValues: true, pick: PICK };
 
@@ -971,16 +978,41 @@ const EMBEDDED_MIN_PX = 400;   // below this, an EXIF preview isn't worth keepin
 
 let canDecodeHeic = null;  // null = untested, then true/false. Tested once.
 
-async function shrinkToBlob(source) {
-  const w = source.width, h = source.height;
-  if (!w || !h) return null;
-  const scale = Math.min(1, THUMB_PX / Math.max(w, h));
-  const cw = Math.max(1, Math.round(w * scale));
-  const ch = Math.max(1, Math.round(h * scale));
+/* EXIF orientation, 1 to 8. Values 5 to 8 involve a quarter turn, which means
+   the finished image has its width and height swapped relative to the stored
+   pixels. The transform matrices below are the standard set; each one maps the
+   drawn image into a canvas already sized for the rotated result. */
+const SWAPS_AXES = o => o >= 5 && o <= 8;
+
+async function shrinkToBlob(source, orientation = 1) {
+  const sw = source.width, sh = source.height;
+  if (!sw || !sh) return null;
+
+  const swap = SWAPS_AXES(orientation);
+  const outW = swap ? sh : sw;
+  const outH = swap ? sw : sh;
+
+  const scale = Math.min(1, THUMB_PX / Math.max(outW, outH));
+  const dw = Math.max(1, Math.round(sw * scale));   // drawn size, before rotating
+  const dh = Math.max(1, Math.round(sh * scale));
+  const cw = swap ? dh : dw;                        // canvas size, after rotating
+  const ch = swap ? dw : dh;
 
   const canvas = document.createElement('canvas');
   canvas.width = cw; canvas.height = ch;
-  canvas.getContext('2d').drawImage(source, 0, 0, cw, ch);
+  const ctx = canvas.getContext('2d');
+
+  switch (orientation) {
+    case 2: ctx.transform(-1, 0, 0,  1, dw,  0); break;   // flip horizontal
+    case 3: ctx.transform(-1, 0, 0, -1, dw, dh); break;   // 180
+    case 4: ctx.transform( 1, 0, 0, -1,  0, dh); break;   // flip vertical
+    case 5: ctx.transform( 0, 1, 1,  0,  0,  0); break;   // transpose
+    case 6: ctx.transform( 0, 1, -1, 0, dh,  0); break;   // 90 clockwise
+    case 7: ctx.transform( 0, -1, -1, 0, dh, dw); break;  // transverse
+    case 8: ctx.transform( 0, -1, 1, 0,  0, dw); break;   // 270 clockwise
+    default: break;                                        // 1, or absent
+  }
+  ctx.drawImage(source, 0, 0, dw, dh);
 
   return new Promise(resolve =>
     canvas.toBlob(resolve, 'image/jpeg', THUMB_QUALITY));
@@ -992,13 +1024,28 @@ async function shrinkToBlob(source) {
    which is fine for a row in a list and hopeless full-screen. Decoding gives a
    900px image worth looking at. This runs sequentially in the second pass of an
    import, so the memory cost is one image at a time rather than eight. */
-async function makeThumb(file, tiffBuffer) {
+async function makeThumb(file, tiffBuffer, exif) {
   const isHeic = /hei[cf]$/i.test(file.name);
+  const orientation = Number(exif && exif.orientation) || 1;
+  const storedW = exif && exif.storedW;
+  const storedH = exif && exif.storedH;
 
   if (!(canDecodeHeic === false && isHeic)) {
     try {
-      const bitmap = await createImageBitmap(file);
-      const blob = await shrinkToBlob(bitmap);
+      /* Ask the decoder to apply the orientation itself. Browsers disagree about
+         whether that is the default, so rather than trust either answer we check
+         the result: if the rotation happened, a quarter-turned photo comes back
+         with its stored width and height swapped. Only rotate by hand when the
+         decoder clearly didn't, otherwise the image gets turned twice. */
+      const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+
+      let applyOrientation = orientation;
+      if (SWAPS_AXES(orientation) && storedW && storedH) {
+        const alreadyRotated = bitmap.width === storedH && bitmap.height === storedW;
+        if (alreadyRotated) applyOrientation = 1;
+      }
+
+      const blob = await shrinkToBlob(bitmap, applyOrientation);
       bitmap.close();
       if (isHeic) canDecodeHeic = true;
       if (blob) return blob;
@@ -1014,14 +1061,13 @@ async function makeThumb(file, tiffBuffer) {
     const embedded = await exifr.thumbnail(tiffBuffer || file);
     if (embedded && embedded.byteLength > 2048) {
       const blob = new Blob([embedded], { type: 'image/jpeg' });
-      // Re-encode through the canvas so a large embedded preview gets capped
-      // and a small one is at least flagged as low quality by its size.
       try {
+        // An embedded preview is bare JPEG with no EXIF of its own, so the
+        // parent's orientation always has to be applied here by hand.
         const bmp = await createImageBitmap(blob);
-        const out = Math.max(bmp.width, bmp.height) >= EMBEDDED_MIN_PX
-          ? await shrinkToBlob(bmp) : blob;
+        const out = await shrinkToBlob(bmp, orientation);
         bmp.close();
-        return out;
+        return out || blob;
       } catch (_) { return blob; }
     }
   } catch (_) {}
@@ -1055,15 +1101,23 @@ async function readExif(file, wantThumb) {
     when = x.DateTimeOriginal || x.CreateDate || x.ModifyDate || null;
   }
 
+  // Carried through so the thumbnail pass can rotate correctly without
+  // re-reading the file.
+  const shape = {
+    orientation: x ? Number(x.Orientation) || 1 : 1,
+    storedW: x ? (x.ExifImageWidth || x.ImageWidth || 0) : 0,
+    storedH: x ? (x.ExifImageHeight || x.ImageHeight || 0) : 0
+  };
+
   let thumb = null;
   if (wantThumb) {
-    thumb = await makeThumb(file, tiff);
+    thumb = await makeThumb(file, tiff, shape);
     if (thumb) { stats.thumbs++; stats.thumbBytes += thumb.size; }
   }
 
   // Fall back to file mtime so a photo without EXIF time still orders sensibly.
   if (!when && file.lastModified) when = new Date(file.lastModified);
-  return { name: file.name, size: file.size, lat, lon, when, thumb };
+  return { name: file.name, size: file.size, lat, lon, when, thumb, shape };
 }
 
 async function ingest(all) {
@@ -1170,7 +1224,7 @@ async function buildThumbsInBackground(items) {
   for (let i = 0; i < pending.length; i++) {
     const o = pending[i];
     try {
-      const thumb = await makeThumb(o.file, null);
+      const thumb = await makeThumb(o.file, null, o.meta.shape);
       if (thumb) {
         stats.thumbs++;
         stats.thumbBytes += thumb.size;
@@ -1785,16 +1839,34 @@ function startPlayback(trip) {
   if (trip.photos.length < 2) { zoomTo(trip.photos); return; }
 
   const segs = buildSegments(trip.photos);
-  const line = L.polyline([], {
-    color: trip.color, weight: 4, opacity: .95, lineJoin: 'round'
+
+  /* Everything for the replay goes onto one canvas.
+
+     The dot used to be an L.marker, and Leaflet positions marker icons by
+     rounding to whole pixels. Moving slower than a pixel per frame means the
+     transform snaps between two integers over and over, which is the vibration.
+     A canvas layer draws at floating-point coordinates, so slow movement is
+     genuinely smooth.
+
+     The path is split in two as well. Rebuilding the entire polyline every frame
+     meant regenerating a path of hundreds of points sixty times a second; now
+     the finished part is only rewritten when a segment is crossed, and the part
+     still being drawn is a two-point line. */
+  const canvas = L.canvas({ padding: 0.5 }).addTo(map);
+
+  const doneLine = L.polyline([[trip.photos[0].lat, trip.photos[0].lon]], {
+    color: trip.color, weight: 4, opacity: .95,
+    lineJoin: 'round', lineCap: 'round', smoothFactor: 1, renderer: canvas
   }).addTo(map);
-  const head = L.marker([trip.photos[0].lat, trip.photos[0].lon], {
-    icon: L.divIcon({
-      className: '',
-      html: `<div class="route-head" style="background:${trip.color}"></div>`,
-      iconSize: [14, 14], iconAnchor: [7, 7]
-    }),
-    zIndexOffset: 1000
+
+  const liveLine = L.polyline([], {
+    color: trip.color, weight: 4, opacity: .95,
+    lineJoin: 'round', lineCap: 'round', renderer: canvas
+  }).addTo(map);
+
+  const head = L.circleMarker([trip.photos[0].lat, trip.photos[0].lon], {
+    radius: 6, color: '#fff', weight: 2.5,
+    fillColor: trip.color, fillOpacity: 1, renderer: canvas
   }).addTo(map);
 
   // The pins and static routes would only clutter the replay.
@@ -1802,9 +1874,9 @@ function startPlayback(trip) {
   layers.forEach(l => { if (l instanceof L.Polyline) map.removeLayer(l); });
 
   playback = {
-    trip, segs, line, head,
+    trip, segs, canvas, doneLine, liveLine, head,
     t: 0, speed: 1, paused: false, last: performance.now(),
-    lastPan: 0, shownIndex: -1,
+    lastPan: 0, shownIndex: -1, doneUpto: -1,
     total: segs.reduce((n, s) => n + s.dur, 0)
   };
 
@@ -1840,21 +1912,27 @@ function playFrame(now) {
   const lat = seg.from.lat + (seg.to.lat - seg.from.lat) * f;
   const lon = seg.from.lon + (seg.to.lon - seg.from.lon) * f;
 
-  const done = pb.trip.photos.slice(0, i + 1).map(p => [p.lat, p.lon]);
-  done.push([lat, lon]);
-  pb.line.setLatLngs(done);
+  // The finished part of the route only changes when a segment is crossed.
+  if (i !== pb.doneUpto) {
+    pb.doneUpto = i;
+    pb.doneLine.setLatLngs(pb.trip.photos.slice(0, i + 1).map(p => [p.lat, p.lon]));
+  }
+  // The part currently being drawn is just two points.
+  pb.liveLine.setLatLngs([[seg.from.lat, seg.from.lon], [lat, lon]]);
   pb.head.setLatLng([lat, lon]);
 
-  // Keep the head on screen without recentering every frame — only nudge when
-  // it drifts out of the middle of the viewport, and not more than once a
-  // second, or the pans queue up and fight each other.
+  /* Keep the head on screen without recentering every frame. Only nudge when it
+     leaves the middle of the viewport, never while a previous pan is still
+     running — overlapping pan tweens were a second source of judder, since each
+     one restarts the easing from a moving position. */
   const size = map.getSize();
   const pt = map.latLngToContainerPoint([lat, lon]);
-  const outside = pt.x < size.x * 0.25 || pt.x > size.x * 0.75 ||
-                  pt.y < size.y * 0.25 || pt.y > size.y * 0.75;
-  if (outside && now - pb.lastPan > 900) {
+  const outside = pt.x < size.x * 0.2 || pt.x > size.x * 0.8 ||
+                  pt.y < size.y * 0.2 || pt.y > size.y * 0.8;
+  const panning = map._panAnim && map._panAnim._inProgress;
+  if (outside && !panning && now - pb.lastPan > 1100) {
     pb.lastPan = now;
-    map.panTo([lat, lon], { animate: true, duration: 0.8 });
+    map.panTo([lat, lon], { animate: true, duration: 0.7, easeLinearity: 0.4 });
   }
 
   const idx = f > 0.5 ? i + 1 : i;
