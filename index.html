@@ -235,22 +235,28 @@
   }
   #playbar .fill { height: 100%; width: 0; background: var(--accent); transition: width .1s linear; }
 
-  /* The photo shown while the dot is parked at a stop. Sits above centre so it
-     doesn't cover the dot, which is roughly mid-screen while the map follows. */
+  /* The photo shown while the dot is parked at a stop.
+
+     Centered, and large. It was originally offset upwards to avoid covering the
+     dot, which only made it look misplaced — and the dot is stationary during a
+     dwell anyway, so there is nothing to avoid. The photo is the point of the
+     pause; it should take the screen and then get out of the way. */
   #playphoto {
     position: absolute; z-index: 1050; pointer-events: none;
-    left: 50%; top: 32%;
-    transform: translate(-50%, -50%) scale(.94);
-    opacity: 0; transition: opacity .3s ease, transform .3s cubic-bezier(.32,.72,0,1);
-    max-width: min(58%, 330px); max-height: 42%;
-    border-radius: 10px; overflow: hidden; background: #000;
-    box-shadow: 0 8px 34px rgba(0,0,0,.45), 0 0 0 3px rgba(255,255,255,.9);
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%) scale(.96);
+    opacity: 0; transition: opacity .26s ease, transform .32s cubic-bezier(.32,.72,0,1);
+    max-width: min(76%, 520px); max-height: 62%;
+    border-radius: 10px; overflow: hidden; background: #0b0d11;
+    box-shadow: 0 14px 48px rgba(0,0,0,.5), 0 0 0 4px rgba(255,255,255,.95);
   }
   #playphoto.on { opacity: 1; transform: translate(-50%, -50%) scale(1); }
   #playphoto img { display: block; width: 100%; height: 100%; object-fit: contain; }
 
   @media (max-width: 720px) {
-    #playphoto { max-width: 68%; max-height: 38%; top: 30%; }
+    /* Sits between the top of the screen and the play bar, rather than dead
+       centre of the container, so it never tucks under the controls. */
+    #playphoto { max-width: 88%; max-height: 54%; top: 44%; }
   }
 
   /* The moving head of the animated route. */
