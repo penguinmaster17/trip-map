@@ -241,22 +241,31 @@
      dot, which only made it look misplaced — and the dot is stationary during a
      dwell anyway, so there is nothing to avoid. The photo is the point of the
      pause; it should take the screen and then get out of the way. */
+  /* Given a real width and height, not just maximums.
+
+     With only max-width/max-height an absolutely positioned box shrinks to fit
+     its content, so the card ended up the size of the stored preview — and a
+     library imported before previews grew is full of 200px images. The card
+     rendered at 200px however much room it had. Fixed dimensions plus
+     object-fit: contain means the photo fills the space it is given. */
   #playphoto {
     position: absolute; z-index: 1050; pointer-events: none;
     left: 50%; top: 50%;
+    width: min(72%, 560px); height: 62%;
     transform: translate(-50%, -50%) scale(.96);
     opacity: 0; transition: opacity .26s ease, transform .32s cubic-bezier(.32,.72,0,1);
-    max-width: min(76%, 520px); max-height: 62%;
-    border-radius: 10px; overflow: hidden; background: #0b0d11;
-    box-shadow: 0 14px 48px rgba(0,0,0,.5), 0 0 0 4px rgba(255,255,255,.95);
+    border-radius: 12px; overflow: hidden;
+    background: rgba(10,12,16,.82); backdrop-filter: blur(3px);
+    box-shadow: 0 16px 54px rgba(0,0,0,.55);
   }
   #playphoto.on { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-  #playphoto img { display: block; width: 100%; height: 100%; object-fit: contain; }
+  #playphoto img {
+    display: block; width: 100%; height: 100%;
+    object-fit: contain;   /* never crop; letterbox against the dark card */
+  }
 
   @media (max-width: 720px) {
-    /* Sits between the top of the screen and the play bar, rather than dead
-       centre of the container, so it never tucks under the controls. */
-    #playphoto { max-width: 88%; max-height: 54%; top: 44%; }
+    #playphoto { width: 90%; height: 56%; }
   }
 
   /* The moving head of the animated route. */
@@ -264,8 +273,12 @@
     width: 14px; height: 14px; border-radius: 50%;
     border: 3px solid #fff; box-shadow: 0 0 0 2px rgba(0,0,0,.25), 0 2px 8px rgba(0,0,0,.4);
   }
-  body.playing #side, body.playing #mobilebar { opacity: .25; pointer-events: none; }
-  body.playing #side, body.playing #mobilebar { transition: opacity .2s; }
+  /* During playback the navigation goes away completely rather than sitting
+     dimmed. A greyed-out bar still takes up the bottom of the screen and pushes
+     the play controls into an odd position above it. */
+  body.playing #side, body.playing #mobilebar {
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
 
   .picks { display: flex; gap: 8px; justify-content: center; margin: 18px 0 0; flex-wrap: wrap; }
   .btn {
@@ -349,8 +362,10 @@
     #mMenu.open { display: flex; }
     #mMenu button { text-align: left; padding: 10px 14px; }
 
-    /* Sit above the bottom navigation rather than on top of it. */
+    /* Clear of the bottom navigation normally; down to the edge while playing,
+       since the navigation is hidden then and the gap looks like a mistake. */
     #playbar { bottom: calc(74px + env(safe-area-inset-bottom, 0px)); }
+    body.playing #playbar { bottom: calc(14px + env(safe-area-inset-bottom, 0px)); }
 
     #intro { z-index: 1200; }
     #drop { padding: 32px 20px; }
