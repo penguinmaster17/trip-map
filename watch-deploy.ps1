@@ -27,7 +27,11 @@ param(
     [switch]$Once
 )
 
-$ErrorActionPreference = 'Stop'
+# Deliberately NOT 'Stop'. Git writes its ordinary progress and result lines to
+# stderr, including the "To https://github.com/..." that means success. With
+# 2>&1 those arrive as error records, and 'Stop' turns a successful push into a
+# terminating error. Native command success is $LASTEXITCODE, nothing else.
+$ErrorActionPreference = 'Continue'
 Set-Location -LiteralPath $PSScriptRoot
 
 function Write-Stamp($Message, $Color = 'Gray') {
@@ -69,12 +73,15 @@ while ($true) {
             Write-Stamp "$ahead $word to push:" 'White'
             foreach ($s in $subjects) { Write-Host "           - $s" -ForegroundColor DarkGray }
 
-            $output = git push 2>&1
-            if ($LASTEXITCODE -eq 0) {
+            # Flatten to strings so nothing arrives as an error record.
+            $output = @(git push 2>&1 | ForEach-Object { "$_" })
+            $code = $LASTEXITCODE
+
+            if ($code -eq 0) {
                 Write-Stamp "pushed - Vercel is building" 'Green'
             }
             else {
-                Write-Stamp "push failed:" 'Red'
+                Write-Stamp "push failed (exit $code):" 'Red'
                 $output | ForEach-Object { Write-Host "           $_" -ForegroundColor DarkRed }
                 # Most likely cause is the remote having commits we don't.
                 if ($output -match 'rejected|non-fast-forward|fetch first') {

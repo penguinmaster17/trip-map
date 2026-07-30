@@ -11,7 +11,9 @@
 
 param([string]$Message)
 
-$ErrorActionPreference = 'Stop'
+# Not 'Stop' - git reports success on stderr, which would otherwise throw.
+# See the note in watch-deploy.ps1.
+$ErrorActionPreference = 'Continue'
 Set-Location -LiteralPath $PSScriptRoot
 
 $dirty = git status --porcelain
