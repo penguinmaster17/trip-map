@@ -1983,6 +1983,88 @@ playPhoto.addEventListener('click', e => {
   playPauseB.textContent = playback.paused ? 'Play' : 'Pause';
 });
 
+/* ---------- smoothing ----------
+   Straight lines between stops look mechanical, all hard corners. The app has
+   no idea where the roads are and isn't going to invent them, but it can at
+   least round the corners.
+
+   This is a centripetal Catmull-Rom spline. Two properties matter here: it
+   passes exactly through every stop, so the dot still lands where the photo was
+   taken; and the centripetal parameterisation, unlike the uniform version,
+   cannot form loops or cusps at sharp turns — which is precisely what a walking
+   route doubling back on itself would produce. */
+
+function catmullRom(p0, p1, p2, p3, t, alpha = 0.5) {
+  const d = (a, b) => Math.pow(Math.hypot(b[0] - a[0], b[1] - a[1]), alpha);
+  const t0 = 0;
+  const t1 = t0 + (d(p0, p1) || 1e-6);
+  const t2 = t1 + (d(p1, p2) || 1e-6);
+  const t3 = t2 + (d(p2, p3) || 1e-6);
+  const tt = t1 + (t2 - t1) * t;
+
+  const lerp = (a, b, ta, tb, x) => {
+    const w = (x - ta) / (tb - ta || 1e-6);
+    return [a[0] + (b[0] - a[0]) * w, a[1] + (b[1] - a[1]) * w];
+  };
+  const a1 = lerp(p0, p1, t0, t1, tt);
+  const a2 = lerp(p1, p2, t1, t2, tt);
+  const a3 = lerp(p2, p3, t2, t3, tt);
+  const b1 = lerp(a1, a2, t0, t2, tt);
+  const b2 = lerp(a2, a3, t1, t3, tt);
+  return lerp(b1, b2, t1, t2, tt);
+}
+
+/* Returns a dense point list for the whole trip plus, for each stop, the index
+   where it sits in that list — so playback can walk the curve and still know
+   exactly when it has arrived somewhere. */
+function smoothRoute(stops) {
+  const raw = stops.map(s => [s.lat, s.lon]);
+  if (raw.length < 2) return { pts: raw, stopAt: raw.map((_, i) => i) };
+
+  const pts = [raw[0]];
+  const stopAt = [0];
+
+  for (let i = 0; i < raw.length - 1; i++) {
+    const p0 = raw[i - 1] || raw[i];
+    const p1 = raw[i];
+    const p2 = raw[i + 1];
+    const p3 = raw[i + 2] || raw[i + 1];
+
+    // More samples over longer hops, so the curve stays smooth at any scale.
+    const km = haversineKm(p1[0], p1[1], p2[0], p2[1]);
+    const n = Math.max(6, Math.min(48, Math.round(km * 4) + 6));
+
+    for (let k = 1; k <= n; k++) pts.push(catmullRom(p0, p1, p2, p3, k / n));
+    stopAt.push(pts.length - 1);
+  }
+  return { pts, stopAt };
+}
+
+// Running distance along the curve, so the dot moves at an even speed rather
+// than racing through densely sampled corners.
+function cumulativeLengths(pts) {
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) {
+    cum.push(cum[i-1] + haversineKm(pts[i-1][0], pts[i-1][1], pts[i][0], pts[i][1]));
+  }
+  return cum;
+}
+
+function pointAtDistance(pts, cum, target) {
+  if (target <= 0) return pts[0];
+  const last = cum[cum.length - 1];
+  if (target >= last) return pts[pts.length - 1];
+  let lo = 0, hi = cum.length - 1;
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >> 1;
+    if (cum[mid] <= target) lo = mid; else hi = mid;
+  }
+  const span = cum[hi] - cum[lo] || 1e-9;
+  const f = (target - cum[lo]) / span;
+  return [pts[lo][0] + (pts[hi][0] - pts[lo][0]) * f,
+          pts[lo][1] + (pts[hi][1] - pts[lo][1]) * f];
+}
+
 /* The timeline alternates: pause at a stop while its photo is up, travel to the
    next one, pause again. Travel keeps the distance-based pacing from before;
    dwell time is shared out of a fixed budget so a trip with sixty stops doesn't
@@ -2008,10 +2090,14 @@ function buildTimeline(stops) {
   const passing = Math.max(0, stops.length - shown);
   const beat = passing ? Math.min(200, PASSTHROUGH_BUDGET_MS / passing) : 0;
 
+  const { pts, stopAt } = smoothRoute(stops);
+  const cum = cumulativeLengths(pts);
+
+  // Pace by the length of the curve actually travelled, not the straight line.
   const weights = [];
   let weightTotal = 0;
   for (let i = 1; i < stops.length; i++) {
-    const w = segWeight(haversineKm(stops[i-1].lat, stops[i-1].lon, stops[i].lat, stops[i].lon));
+    const w = segWeight(cum[stopAt[i]] - cum[stopAt[i-1]]);
     weights.push(w);
     weightTotal += w;
   }
@@ -2021,7 +2107,11 @@ function buildTimeline(stops) {
   stops.forEach((stop, i) => {
     if (i > 0) {
       const dur = weightTotal ? (weights[i-1] / weightTotal) * PLAY_TOTAL_MS : 0;
-      items.push({ type: 'travel', from: stops[i-1], to: stop, start: at, dur });
+      items.push({
+        type: 'travel', from: stops[i-1], to: stop, start: at, dur,
+        fromIdx: stopAt[i-1], toIdx: stopAt[i],
+        d0: cum[stopAt[i-1]], d1: cum[stopAt[i]]
+      });
       at += dur;
     }
     // A stop with no preview, or one not selected on a long trip, still gets a
@@ -2032,7 +2122,7 @@ function buildTimeline(stops) {
     at += d;
   });
 
-  return { items, total: at };
+  return { items, total: at, pts, cum, stopAt };
 }
 
 function startPlayback(trip) {
@@ -2077,7 +2167,9 @@ function startPlayback(trip) {
   layers.forEach(l => { if (l instanceof L.Polyline) map.removeLayer(l); });
 
   playback = {
-    trip, stops, items: timeline.items, canvas, doneLine, liveLine, head,
+    trip, stops, items: timeline.items,
+    pts: timeline.pts, cum: timeline.cum, stopAt: timeline.stopAt,
+    canvas, doneLine, liveLine, head,
     t: 0, speed: 1, paused: false, last: performance.now(),
     lastPan: 0, shownIndex: -1, doneUpto: -1, photoUp: false,
     total: timeline.total
@@ -2112,28 +2204,38 @@ function playFrame(now) {
   const item = pb.items[i];
   const f = item.dur ? Math.min(1, Math.max(0, (pb.t - item.start) / item.dur)) : 1;
 
-  let lat, lon, stopIndex;
+  let lat, lon, stopIndex, curveIdx;
   if (item.type === 'travel') {
-    lat = item.from.lat + (item.to.lat - item.from.lat) * f;
-    lon = item.from.lon + (item.to.lon - item.from.lon) * f;
+    // Distance along the curve, so the pace stays even through the bends.
+    const here = pointAtDistance(pb.pts, pb.cum, item.d0 + (item.d1 - item.d0) * f);
+    lat = here[0]; lon = here[1];
+    curveIdx = item.fromIdx;
     stopIndex = pb.stops.indexOf(f > 0.5 ? item.to : item.from);
     showPlayPhoto(null);
   } else {
     lat = item.stop.lat;
     lon = item.stop.lon;
+    curveIdx = pb.stopAt[item.index];
     stopIndex = item.index;
     showPlayPhoto(item.hasPhoto ? item.stop : null);
   }
 
-  // The finished part of the route only changes when a stop is passed.
-  const drawnTo = item.type === 'travel' ? pb.stops.indexOf(item.from) : item.index;
-  if (drawnTo !== pb.doneUpto) {
-    pb.doneUpto = drawnTo;
-    pb.doneLine.setLatLngs(pb.stops.slice(0, drawnTo + 1).map(s => [s.lat, s.lon]));
+  // The finished part of the curve only changes when a stop is passed.
+  if (curveIdx !== pb.doneUpto) {
+    pb.doneUpto = curveIdx;
+    pb.doneLine.setLatLngs(pb.pts.slice(0, curveIdx + 1));
   }
-  // The part currently being drawn is just two points.
-  const from = item.type === 'travel' ? item.from : item.stop;
-  pb.liveLine.setLatLngs([[from.lat, from.lon], [lat, lon]]);
+  // The part currently being drawn is the curve so far within this leg.
+  if (item.type === 'travel') {
+    const upto = [];
+    for (let k = item.fromIdx; k <= item.toIdx && pb.cum[k] <= item.d0 + (item.d1 - item.d0) * f; k++) {
+      upto.push(pb.pts[k]);
+    }
+    upto.push([lat, lon]);
+    pb.liveLine.setLatLngs(upto);
+  } else {
+    pb.liveLine.setLatLngs([]);
+  }
   pb.head.setLatLng([lat, lon]);
 
   /* Keep the head on screen without recentering every frame. Only nudge when it
