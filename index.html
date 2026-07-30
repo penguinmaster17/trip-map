@@ -248,24 +248,34 @@
      library imported before previews grew is full of 200px images. The card
      rendered at 200px however much room it had. Fixed dimensions plus
      object-fit: contain means the photo fills the space it is given. */
+  /* The card takes the shape of the photo inside it.
+
+     A fixed box meant a portrait photo sat in a landscape frame with black bars
+     down either side. Instead the aspect ratio is set from the image itself once
+     it loads, and the box is sized by width with height derived from that ratio
+     — clamped by max-height, which the browser honors by narrowing the width to
+     match. So a tall photo comes out tall, a wide one wide, and there is never
+     any leftover background to see. */
   #playphoto {
     position: absolute; z-index: 1050; pointer-events: none;
     left: 50%; top: 50%;
-    width: min(72%, 560px); height: 62%;
+    width: min(74%, 620px);
+    aspect-ratio: var(--ar, 3 / 4);
+    max-height: 66%;
+    height: auto;
     transform: translate(-50%, -50%) scale(.96);
     opacity: 0; transition: opacity .26s ease, transform .32s cubic-bezier(.32,.72,0,1);
-    border-radius: 12px; overflow: hidden;
-    background: rgba(10,12,16,.82); backdrop-filter: blur(3px);
-    box-shadow: 0 16px 54px rgba(0,0,0,.55);
+    border-radius: 10px; overflow: hidden;
+    box-shadow: 0 16px 54px rgba(0,0,0,.55), 0 0 0 4px rgba(255,255,255,.96);
   }
   #playphoto.on { opacity: 1; transform: translate(-50%, -50%) scale(1); }
   #playphoto img {
     display: block; width: 100%; height: 100%;
-    object-fit: contain;   /* never crop; letterbox against the dark card */
+    object-fit: cover;   /* the box already matches the photo, so nothing crops */
   }
 
   @media (max-width: 720px) {
-    #playphoto { width: 90%; height: 56%; }
+    #playphoto { width: 92%; max-height: 62%; }
   }
 
   /* The moving head of the animated route. */
@@ -1934,7 +1944,10 @@ function showPlayPhoto(stop) {
   if (url) {
     if (playback.photoUp !== url) {
       playback.photoUp = url;
+      // Hold the previous shape until the new image reports its own, so the
+      // card doesn't visibly snap from one ratio to another mid-fade.
       playPhotoImg.src = url;
+      if (playPhotoImg.complete) applyPhotoRatio();
     }
     playPhoto.classList.add('on');
   } else {
@@ -1942,6 +1955,14 @@ function showPlayPhoto(stop) {
     playPhoto.classList.remove('on');
   }
 }
+
+function applyPhotoRatio() {
+  const w = playPhotoImg.naturalWidth, h = playPhotoImg.naturalHeight;
+  if (w && h) playPhoto.style.setProperty('--ar', `${w} / ${h}`);
+}
+
+// Fires for images that weren't already decoded and cached.
+playPhotoImg.addEventListener('load', applyPhotoRatio);
 
 /* The timeline alternates: pause at a stop while its photo is up, travel to the
    next one, pause again. Travel keeps the distance-based pacing from before;
