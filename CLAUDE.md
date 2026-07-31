@@ -28,6 +28,7 @@ completeness — resist adding infrastructure it doesn't need.
 | `probe.html` | Diagnostic page. Dumps raw EXIF per photo, exports CSV. |
 | `build-cities.js` | Regenerates `cities.js` from the `all-the-cities` package. |
 | `deploy.ps1`, `watch-deploy.ps1` | Only needed when the agent can't push. See Deploying. |
+| `.vercelignore` | Keeps the notes, scripts and generator off the web server. |
 
 ## Established findings — do not re-derive
 
@@ -90,6 +91,48 @@ the world is square; zoom out far enough and blank bands appear above and below.
 state.** The playback photo card sat at `opacity: 0` with `pointer-events: auto`
 above the trip sheet and silently swallowed taps on the Play button. Applies to
 `#playphoto`, `#playbar`, `#viewer`, `#intro`, `#mMenu`.
+
+**A status message must reach both layouts, or it reaches nobody.** There are
+three places to put one and on a phone mid-import all three are off screen: the
+header is `display: none` below 720px, the intro panel's heading is hidden the
+moment a library exists, and the sheet handle sits below the fold while the
+sheet is closed. Measured on the deployed app at 375x812 — the status line
+reported zero client rects and the sheet handle was at y=840. So importing into
+an existing library on a phone produced *no feedback at all*, which is
+indistinguishable from the OOM crash the breadcrumbs exist to report — and the
+breadcrumb report itself went to the same invisible element. Everything routes
+through `setStatus()` now, and `#toast` is the copy a phone can show. Don't add
+a new message by writing to `statsEl` directly.
+
+**One IndexedDB connection, and keyed gets rather than every key.** Each call
+site used to open and close its own connection, including `saveThumb`, which
+runs once per photo: 0.69 ms per open/close measured, about seven seconds across
+a ten thousand photo import. `mergeIntoLibrary` also pulled `getAllKeys()` once
+per twenty-five photo chunk to test membership — 33 ms against a ten thousand
+record store, so roughly thirteen seconds of reading keys. Twenty-five keyed
+gets cost about eleven milliseconds together *and* hand back the stored record,
+which is the only way to learn whether it already has a preview.
+
+**Re-importing must not re-decode what is already stored.** Pass one always
+reports `thumb: null`, so pass two treated every photo as needing a thumbnail —
+re-importing a folder you had already imported meant a full HEIC decode per
+photo to arrive at exactly the bytes already on disk. `mergeIntoLibrary` returns
+the set of ids that already have one; pass two skips those. Re-import is a
+documented workflow, so it has to be cheap when there is nothing to gain.
+
+**Object URLs are keyed on the record id, never stashed on the record.**
+`loadLibrary` builds fresh objects out of `getAll()` on every rebuild, so a URL
+cached as `p._url` was gone by the next rebuild and a second, third, fourth URL
+got minted for the same photo while the earlier ones stayed alive forever.
+Nothing revoked them. Keyed on the id the entry survives the rebuild, and when
+the blob behind it really has changed the old URL is revoked first.
+
+**Stopping playback re-attaches; it does not rebuild.** `startPlayback` only
+detaches the cluster and the route lines, so `stopPlayback` only has to put
+those two back. It used to call `build()`, which reconstructs every marker and
+rerenders the sidebar to reach the same state — and then `fitBounds` to the
+whole library, throwing away the view the replay had just spent thirty seconds
+arriving at.
 
 **PowerShell scripts must be plain ASCII.** Windows PowerShell 5.1 reads a `.ps1`
 without a BOM using the system codepage, where the bytes of a UTF-8 em dash
@@ -202,4 +245,3 @@ collisions.
   which is a different feature.
 - **Vector basemap** for road-snapped paths, if the curved line stops being good
   enough.
-- **A `.vercelignore`** so the scripts and README aren't served publicly.

@@ -9,7 +9,7 @@
  * returning visitors keep getting the old cached copy.
  */
 
-const CACHE_VERSION = 'trip-map-v19';
+const CACHE_VERSION = 'trip-map-v20';
 const TILE_CACHE    = 'trip-map-tiles-v1';
 const MAX_TILES     = 1200;  // a few cities' worth at the zooms you actually use;
                              // cached tiles are what make a second visit feel instant
@@ -75,7 +75,9 @@ self.addEventListener('fetch', event => {
         const res = await fetch(request);
         if (res.ok || res.type === 'opaque') {
           cache.put(request, res.clone());
-          trimCache(TILE_CACHE, MAX_TILES);
+          // Kept alive explicitly — an unawaited promise can be cut short when
+          // the worker is terminated, which would let the cache grow past MAX.
+          event.waitUntil(trimCache(TILE_CACHE, MAX_TILES));
         }
         return res;
       } catch (err) {
@@ -91,8 +93,13 @@ self.addEventListener('fetch', event => {
     event.respondWith((async () => {
       try {
         const res = await fetch(request);
-        const cache = await caches.open(CACHE_VERSION);
-        cache.put('./index.html', res.clone());
+        // Only a good response replaces the offline copy. A 502 during a deploy,
+        // or a captive portal's login page, is still a Response — caching it
+        // would leave the app permanently serving that instead of itself.
+        if (res.ok) {
+          const cache = await caches.open(CACHE_VERSION);
+          cache.put('./index.html', res.clone());
+        }
         return res;
       } catch (err) {
         const cache = await caches.open(CACHE_VERSION);

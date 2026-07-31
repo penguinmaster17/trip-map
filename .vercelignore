@@ -1,0 +1,27 @@
+# Files that belong in the repo but not on the web server.
+#
+# Vercel serves the deployment directory as static files, so everything checked
+# in was reachable over HTTP — including the deploy scripts and the working
+# notes. None of it is secret, but none of it is part of the app either.
+#
+# Anything not listed here still ships. The app itself is index.html, cities.js,
+# sw.js, manifest.json and the icons; probe.html stays deployed on purpose,
+# because diagnosing an EXIF problem means opening it on the phone that has the
+# photos.
+
+# Working notes and documentation
+CLAUDE.md
+README.md
+
+# Build tooling — cities.js is generated locally and committed, so the
+# generator itself is never needed at deploy time.
+build-cities.js
+
+# Deploy helpers, Windows-only and irrelevant to the served site
+deploy.ps1
+watch-deploy.ps1
+
+# Repo configuration
+.gitattributes
+.gitignore
+.claude/

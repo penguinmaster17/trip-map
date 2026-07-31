@@ -8,6 +8,10 @@ desktop.ini
 .idea/
 *.swp
 
+# Local agent settings and the throwaway static-server config used to test a
+# build before pushing. Machine-specific, and the app still has no build step.
+.claude/
+
 # Nothing is built, but keep these out if tooling ever shows up
 node_modules/
 .vercel

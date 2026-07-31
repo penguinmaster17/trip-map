@@ -119,14 +119,13 @@
   }
   .day-head:hover { background: rgba(127,127,127,.1); color: var(--fg); }
   .shot {
-    display: flex; gap: 8px; align-items: baseline;
+    display: flex; gap: 8px; align-items: center;
     padding: 4px 10px; margin-left: 6px; font-size: 12.5px;
     cursor: pointer; border-radius: 5px; border-left: 2px solid var(--line);
   }
   .shot:hover { background: rgba(127,127,127,.1); border-left-color: var(--accent); }
   .shot .t { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; }
   .shot .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-  .shot { align-items: center; }
   .thumb {
     width: 34px; height: 34px; flex: none; border-radius: 4px;
     object-fit: cover; background: rgba(127,127,127,.18);
@@ -197,6 +196,14 @@
   }
 
   .empty { padding: 30px 16px; color: var(--muted); text-align: center; font-size: 13px; }
+
+  /* The sidebar rows are divs carrying click handlers, so until they were given
+     a tab stop there was no way to reach any of them from a keyboard, and no
+     way to see where you were once you could. */
+  .trip-head:focus-visible, .day-head:focus-visible,
+  .shot:focus-visible, .thumb:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 5px;
+  }
 
   /* ---- route playback ---- */
   .play-trip {
@@ -292,10 +299,6 @@
     object-fit: cover;   /* the box already matches the photo, so nothing crops */
   }
 
-  @media (max-width: 720px) {
-    #playphoto { width: 92%; max-height: 62%; }
-  }
-
   /* The moving head of the animated route. */
   .route-head {
     width: 14px; height: 14px; border-radius: 50%;
@@ -321,6 +324,39 @@
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
   }
+
+  /* ---- status pill ----
+     Every message the app produces used to land somewhere a phone can't show.
+     The header carries the status line and is display:none below 720px; the
+     intro panel carries import progress and is hidden the moment a library
+     exists; the sheet handle is below the fold while the sheet is closed. So
+     importing into an existing library on a phone gave no feedback at all —
+     which is precisely the "I tapped the checkmark and nothing happened"
+     failure the crash breadcrumbs were written to diagnose. This is the channel
+     that is actually on screen. Desktop keeps the header line and doesn't need
+     one. */
+  #toast {
+    position: fixed; left: 50%; z-index: 1150;
+    bottom: calc(74px + env(safe-area-inset-bottom, 0px));
+    width: max-content; max-width: min(92%, 460px);
+    padding: 10px 15px; border-radius: 11px;
+    background: var(--bg); border: 1px solid var(--line);
+    box-shadow: 0 6px 28px rgba(0,0,0,.28);
+    font-size: 12.5px; line-height: 1.45; text-align: center;
+    transform: translateX(-50%) translateY(10px);
+    opacity: 0; visibility: hidden;
+    /* Gated on the visible state. A permanently-mounted overlay left at
+       pointer-events:auto while invisible swallows taps meant for whatever sits
+       underneath it — the playback photo card already cost us that once. */
+    pointer-events: none;
+    transition: opacity .2s, transform .28s cubic-bezier(.32,.72,0,1), visibility 0s .2s;
+  }
+  #toast.on {
+    opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0);
+    pointer-events: auto; cursor: pointer;
+    transition: opacity .2s, transform .28s cubic-bezier(.32,.72,0,1), visibility 0s;
+  }
+  @media (min-width: 721px) { #toast { display: none; } }
 
   /* Phone chrome — hidden on desktop, where the header and sidebar work fine. */
   #mobilebar, #mMenu, #sheetTop { display: none; }
@@ -394,6 +430,8 @@
        since the navigation is hidden then and the gap looks like a mistake. */
     #playbar { bottom: calc(74px + env(safe-area-inset-bottom, 0px)); }
     body.playing #playbar { bottom: calc(14px + env(safe-area-inset-bottom, 0px)); }
+
+    #playphoto { width: 92%; max-height: 62%; }
 
     #intro { z-index: 1200; }
     #drop { padding: 32px 20px; }
@@ -486,6 +524,10 @@
   <button id="mImport">Import library</button>
   <button id="mClear" class="danger">Clear library</button>
 </div>
+
+<!-- Progress and errors, on a phone. See #toast in the stylesheet for why this
+     has to exist at all. aria-live so it is announced rather than only seen. -->
+<div id="toast" role="status" aria-live="polite"></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
@@ -606,6 +648,42 @@ drop.addEventListener('click', e => {
   if (!busy) picker.click();
 });
 
+/* ---------- telling the user something ----------
+   There are three places a message could go and, on a phone mid-import, all
+   three are off screen: the header is display:none below 720px, the intro
+   panel's heading is hidden once a library exists, and the sheet handle sits
+   below the fold while the sheet is closed. Measured on the deployed app at
+   375x812 — the status line reported zero client rects and the sheet handle
+   was at y=840. So everything routes through here, and the pill is the copy
+   that a phone can actually show.
+
+   sticky:  errors and crash reports stay until dismissed; progress fades once
+            it stops arriving.
+   heading: also update the intro panel's heading, which is the right place for
+            import progress while that panel is the whole screen. */
+
+const toastEl = document.getElementById('toast');
+let toastTimer = null;
+
+function setStatus(text, { sticky = false, heading = false } = {}) {
+  if (heading) {
+    const h2 = drop.querySelector('h2');
+    if (h2) h2.textContent = text;
+  }
+  statsEl.textContent = text;
+  sheetStats.textContent = text;
+
+  toastEl.textContent = text;
+  toastEl.classList.add('on');
+  clearTimeout(toastTimer);
+  if (!sticky) toastTimer = setTimeout(() => toastEl.classList.remove('on'), 4000);
+}
+
+toastEl.addEventListener('click', () => {
+  clearTimeout(toastTimer);
+  toastEl.classList.remove('on');
+});
+
 /* ---------- crash breadcrumbs ----------
    A phone browser that runs out of memory kills the tab and reloads the page.
    From the outside that is indistinguishable from "I tapped the button and
@@ -635,7 +713,9 @@ function reportLastCrash() {
     + `Anything already saved is on the map; try a smaller batch for the rest.`
     : `Last import stopped during "${c.stage}".`;
 
-  statsEl.textContent = msg;
+  // Sticky: this is the whole point of the breadcrumbs, and it is reporting on a
+  // crash that already made the app look like it did nothing.
+  setStatus(msg, { sticky: true });
   console.warn('previous import did not finish:', c);
 }
 
@@ -646,13 +726,14 @@ async function handlePicked(e) {
 
   // Nothing came back at all — the picker itself failed, before any of our code.
   if (!files.length) {
-    statsEl.textContent = 'The picker returned no photos. If you selected some, '
-      + 'iOS may still be downloading them from iCloud — try again on Wi-Fi, or in smaller batches.';
+    setStatus('The picker returned no photos. If you selected some, '
+      + 'iOS may still be downloading them from iCloud — try again on Wi-Fi, or in smaller batches.',
+      { sticky: true });
     return;
   }
 
   crumb('received', { count: files.length });
-  drop.querySelector('h2').textContent = `Received ${files.length} photos…`;
+  setStatus(`Received ${files.length} photos…`, { heading: true });
 
   busy = true;
   skipped = 0;
@@ -809,16 +890,36 @@ exportBt.addEventListener('click', doExport);
 importBt.addEventListener('click', doImport);
 clearBt.addEventListener('click', doClear);
 
-['dragenter','dragover'].forEach(t =>
-  drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('hot'); }));
-['dragleave','drop'].forEach(t =>
-  drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('hot'); }));
+/* Dropping works anywhere on the page, not only on the intro panel.
+
+   The handlers used to hang off #drop, which is inside #intro — and #intro is
+   display:none the moment a library exists. So once you had photos, dragging a
+   folder onto the map did nothing whatsoever, with no hint as to why. The panel
+   still lights up when it is on screen; it just isn't the only target. */
+
+const carriesFiles = e =>
+  !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+
+['dragenter','dragover'].forEach(t => document.addEventListener(t, e => {
+  if (!carriesFiles(e)) return;
+  e.preventDefault();        // also stops the browser navigating to the file
+  drop.classList.add('hot');
+}));
+// relatedTarget is null only when the pointer has left the window entirely —
+// otherwise every move between child elements would flicker the highlight off.
+document.addEventListener('dragleave', e => {
+  if (!e.relatedTarget) drop.classList.remove('hot');
+});
 
 let busy = false;
 let skipped = 0;   // non-photo files passed over, reported in the header
 
-drop.addEventListener('drop', async e => {
+document.addEventListener('drop', handleDrop);
+
+async function handleDrop(e) {
+  if (!carriesFiles(e)) return;
   e.preventDefault();
+  drop.classList.remove('hot');
   if (busy) return;
 
   // webkitGetAsEntry must be called synchronously — the moment this handler
@@ -829,14 +930,13 @@ drop.addEventListener('drop', async e => {
 
   busy = true;
   skipped = 0;
-  const h2 = drop.querySelector('h2');
   try {
     let files;
     if (entries.length) {
-      h2.textContent = 'Reading folder…';
+      setStatus('Reading folder…', { heading: true });
       const found = [];
-      for (const en of entries) await collectEntries(en, found, h2);
-      h2.textContent = `Opening ${found.length} photos…`;
+      for (const en of entries) await collectEntries(en, found);
+      setStatus(`Opening ${found.length} photos…`, { heading: true });
       files = await resolveFiles(found);
     } else {
       files = loose;
@@ -844,11 +944,12 @@ drop.addEventListener('drop', async e => {
     await ingest(files);
   } catch (err) {
     console.error(err);
-    h2.textContent = 'Could not read that folder — try the picker instead';
+    setStatus('Could not read that folder — try the picker instead',
+      { sticky: true, heading: true });
   } finally {
     busy = false;
   }
-});
+}
 
 /* A directory reader hands back entries in batches and signals the end with an
    empty batch, so it has to be drained in a loop. Two rules make the difference
@@ -894,7 +995,7 @@ function once(fn, fallback) {
   });
 }
 
-async function collectEntries(entry, out, h2) {
+async function collectEntries(entry, out) {
   if (entry.isFile) {
     // Judged on the name alone. A 4 GB .MOV sitting next to the photos is
     // rejected here and never opened, so it costs one regex test, not a read.
@@ -912,9 +1013,9 @@ async function collectEntries(entry, out, h2) {
     children.push(...batch);
   }
   for (const child of children) {
-    await collectEntries(child, out, h2);
-    if (h2 && out.length && out.length % 25 === 0) {
-      h2.textContent = `Found ${out.length} photos…`;
+    await collectEntries(child, out);
+    if (out.length && out.length % 25 === 0) {
+      setStatus(`Found ${out.length} photos…`, { heading: true });
     }
   }
 }
@@ -1154,9 +1255,16 @@ async function readExif(file, wantThumb) {
   if (!x || (x.latitude == null && !x.DateTimeOriginal)) {
     try {
       const rescued = await parseStubbornHeic(file);
-      if (rescued) { x = rescued.parsed; tiff = rescued.tiff; }
-      stats.fallback++;
-      stats.fallbackMs += performance.now() - t0;
+      // Only count this as a rescue if it rescued something. Every screenshot
+      // and stripped-metadata photo reaches this branch too, and counting those
+      // as HEIC fallbacks made the per-photo cost in the import log meaningless.
+      if (rescued) {
+        x = rescued.parsed; tiff = rescued.tiff;
+        stats.fallback++;
+        stats.fallbackMs += performance.now() - t0;
+      } else {
+        stats.failed++;   // no usable metadata by either route
+      }
     } catch (_) { stats.failed++; }
   } else {
     stats.fast++;
@@ -1199,15 +1307,16 @@ async function ingest(all) {
   skipped += all.length - files.length;
 
   if (!files.length) {
-    drop.querySelector('h2').textContent = all.length
+    setStatus(all.length
       ? `Nothing readable in those ${all.length} file${all.length === 1 ? '' : 's'}`
-      : 'Nothing came back from the picker — try "Choose photos"';
+      : 'Nothing came back from the picker — try "Choose photos"',
+      { sticky: true, heading: true });
     return;
   }
 
   const out = [];
-  let next = 0, done = 0;
-  const h2 = drop.querySelector('h2');
+  const alreadyStored = new Set();   // ids the library already has a preview for
+  let done = 0;
   Object.keys(stats).forEach(k => stats[k] = 0);
   const tStart = performance.now();
 
@@ -1223,7 +1332,7 @@ async function ingest(all) {
      killed partway through pass two, the photos are already on the map and
      re-importing later fills in the previews. */
 
-  h2.textContent = `Reading ${files.length} photos…`;
+  setStatus(`Reading ${files.length} photos…`, { heading: true });
 
   /* Committed in chunks rather than all at the end. If the tab is killed while
      reading 400 photos, everything already written survives — previously the
@@ -1239,7 +1348,7 @@ async function ingest(all) {
         const f = slice[k++];
         part.push({ file: f, meta: await readExif(f, false) });
         if (++done % 5 === 0 || done === files.length) {
-          h2.textContent = `Reading ${done} / ${files.length}…`;
+          setStatus(`Reading ${done} / ${files.length}…`, { heading: true });
           crumb('reading', { done, count: files.length });
         }
       }
@@ -1248,9 +1357,9 @@ async function ingest(all) {
     const merged = await mergeIntoLibrary(part.map(o => toRecord(o.meta)));
     lastImport = lastImport && start
       ? { added: lastImport.added + merged.added,
-          known: lastImport.known + merged.known,
-          total: merged.total }
-      : merged;
+          known: lastImport.known + merged.known }
+      : { added: merged.added, known: merged.known };
+    for (const id of merged.hasThumb) alreadyStored.add(id);
 
     out.push(...part);
     await new Promise(r => setTimeout(r, 0));   // let the browser breathe
@@ -1261,7 +1370,7 @@ async function ingest(all) {
   await rebuildFromLibrary();          // photos are on the map from here on
 
   // ---- pass two: thumbnails, sequential, best effort ----
-  await buildThumbsInBackground(out);
+  await buildThumbsInBackground(out, alreadyStored);
 
   // Open the console after a slow import — this says where the time actually went.
   console.log(
@@ -1275,7 +1384,20 @@ async function ingest(all) {
       'thumbnails':     `${stats.thumbs} made, ${(stats.thumbBytes/1048576).toFixed(1)} MB stored`
     });
 
-  h2.textContent = 'Drag a folder of photos here';
+  // Put the panel's invitation back — quietly, since it isn't news.
+  const h2 = drop.querySelector('h2');
+  if (h2) h2.textContent = 'Drag a folder of photos here';
+
+  /* Say how it went. build() writes the same summary into the header, which is
+     display:none on a phone — so without this an import finished in silence on
+     exactly the device where silence is indistinguishable from a crash. */
+  if (lastImport) {
+    const n = x => x.toLocaleString();
+    setStatus(lastImport.added
+      ? `Added ${n(lastImport.added)} photo${lastImport.added === 1 ? '' : 's'}` +
+        (lastImport.known ? ` · ${n(lastImport.known)} already in your library` : '')
+      : `Nothing new — all ${n(lastImport.known)} already in your library`);
+  }
 }
 
 /* Thumbnails, after the metadata is already safely stored.
@@ -1285,8 +1407,15 @@ async function ingest(all) {
    phone. A pause every few photos hands the main thread back so the map stays
    responsive and the garbage collector gets a chance to run. */
 
-async function buildThumbsInBackground(items) {
-  const pending = items.filter(o => o.meta && !o.meta.thumb);
+/* alreadyStored is the set of ids the merge found already carrying a thumbnail.
+   Without it this pass re-decoded every photo on every import: pass one always
+   reports thumb:null, so re-importing a folder you had already imported meant
+   ten thousand full HEIC decodes to arrive at exactly the data already on disk.
+   Re-importing is a documented workflow — it is how older entries gain previews
+   — so it has to be cheap when there is nothing to gain. */
+async function buildThumbsInBackground(items, alreadyStored = new Set()) {
+  const pending = items.filter(o =>
+    o.meta && !o.meta.thumb && !alreadyStored.has(recordId(o.meta)));
   if (!pending.length) return;
 
   for (let i = 0; i < pending.length; i++) {
@@ -1296,26 +1425,37 @@ async function buildThumbsInBackground(items) {
       if (thumb) {
         stats.thumbs++;
         stats.thumbBytes += thumb.size;
-        await saveThumb(toRecord(o.meta).id, thumb);
+        await saveThumb(recordId(o.meta), thumb);
       }
     } catch (_) { /* one bad photo shouldn't stop the rest */ }
 
     if (i % 4 === 3) {
-      statsEl.textContent = `Making previews… ${i + 1} of ${pending.length}`;
+      setStatus(`Making previews… ${i + 1} of ${pending.length}`);
       await new Promise(r => setTimeout(r, 0));   // yield to the browser
     }
   }
   await rebuildFromLibrary();
 }
 
+/* The read and the write stay inside one transaction, driven by the request's
+   own callback. Awaiting a request mid-transaction and then issuing another
+   works in practice but relies on the transaction still being active after a
+   microtask checkpoint, which is not something to build a write path on. */
 async function saveThumb(id, thumb) {
   if (!libraryAvailable) return;
   try {
-    const db = await openDb();
-    const store = db.transaction(STORE, 'readwrite').objectStore(STORE);
-    const rec = await idbRequest(store.get(id));
-    if (rec) { rec.thumb = thumb; store.put(rec); }
-    db.close();
+    const db = await getDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readwrite');
+      const store = tx.objectStore(STORE);
+      const req = store.get(id);
+      req.onsuccess = () => {
+        const rec = req.result;
+        if (rec) { rec.thumb = thumb; store.put(rec); }
+      };
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
   } catch (_) { libraryAvailable = false; }
 }
 
@@ -1345,12 +1485,33 @@ function openDb() {
   });
 }
 
+/* One connection, held open for the session.
+   Every call site used to open and close its own, including saveThumb — which
+   runs once per photo. Measured at 0.69 ms per open/close on a desktop, that is
+   about seven seconds of pure connection churn across a ten thousand photo
+   import, and a phone is slower. The connection is dropped on close or a version
+   change so the next caller simply reopens. */
+let dbConn = null;
+
+async function getDb() {
+  if (dbConn) return dbConn;
+  const db = await openDb();
+  db.onclose = () => { if (dbConn === db) dbConn = null; };
+  db.onversionchange = () => { db.close(); if (dbConn === db) dbConn = null; };
+  dbConn = db;
+  return db;
+}
+
 function idbRequest(req) {
   return new Promise((resolve, reject) => {
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
+
+// Filename, byte size and capture time. Photos are immutable, so the triple is
+// stable — which is what makes a merge idempotent and a re-import a no-op.
+const recordId = p => `${p.name}|${p.size}|${p.when ? +p.when : 0}`;
 
 // Dates don't survive a JSON round trip, so time is stored as epoch milliseconds
 // and revived on the way out. Coordinates are normalized here too, which means
@@ -1359,7 +1520,7 @@ function toRecord(p) {
   const whenMs = p.when ? +p.when : null;
   const located = hasFix(p);
   return {
-    id: `${p.name}|${p.size}|${whenMs ?? 0}`,
+    id: recordId(p),
     name: p.name,
     size: p.size,
     lat: located ? p.lat : null,
@@ -1372,55 +1533,68 @@ function toRecord(p) {
   };
 }
 
+/* Returns what happened, plus the ids that already carry a thumbnail — the
+   import's second pass needs that to know what it can skip decoding.
+
+   Membership is tested with one keyed get per record rather than by pulling
+   every key in the store. getAllKeys over ten thousand records measured 33 ms,
+   and this runs once per twenty-five photo chunk — four hundred times across a
+   large import, so around thirteen seconds spent reading keys we mostly do not
+   care about. Twenty-five keyed gets cost about eleven milliseconds together,
+   and they hand back the stored record, which is the only way to learn whether
+   it already has a preview. */
 async function mergeIntoLibrary(records) {
   // Collapse duplicates inside this batch first — the same photo can appear
   // twice if a folder contains a copy of itself.
   const batch = new Map();
   for (const r of records) if (r.id) batch.set(r.id, r);
 
-  if (!libraryAvailable) return { added: batch.size, known: 0, total: batch.size };
+  const nothingStored = () =>
+    ({ added: batch.size, known: 0, hasThumb: new Set() });
+
+  if (!libraryAvailable) return nothingStored();
 
   try {
-    const db = await openDb();
-    const known = new Set(await idbRequest(db.transaction(STORE).objectStore(STORE).getAllKeys()));
-
+    const db = await getDb();
     let added = 0, seen = 0;
+    const hasThumb = new Set();
+
     await new Promise((resolve, reject) => {
       const tx = db.transaction(STORE, 'readwrite');
       const store = tx.objectStore(STORE);
+      // Reads and writes are issued from within request callbacks, so the
+      // transaction stays alive until the last one settles.
       for (const [id, rec] of batch) {
-        if (known.has(id)) {
+        const req = store.get(id);
+        req.onsuccess = () => {
+          const existing = req.result;
+          if (!existing) { store.put(rec); added++; return; }
           seen++;
+          if (existing.thumb) hasThumb.add(id);
           // Already have it — but if this pass produced a thumbnail and the
           // stored copy predates thumbnails, take the upgrade. That way
           // re-importing an old folder fills in previews rather than doing
-          // nothing at all.
-          if (rec.thumb) store.put(rec);
-          continue;
-        }
-        store.put(rec);
-        added++;
+          // nothing at all. Never overwrite a stored preview with nothing.
+          else if (rec.thumb) store.put(rec);
+        };
       }
       tx.oncomplete = resolve;
       tx.onerror = () => reject(tx.error);
     });
 
-    const total = await idbRequest(db.transaction(STORE).objectStore(STORE).count());
-    db.close();
-    return { added, known: seen, total };
+    return { added, known: seen, hasThumb };
   } catch (err) {
     console.warn('library unavailable, staying in memory for this session:', err);
     libraryAvailable = false;
-    return { added: batch.size, known: 0, total: batch.size };
+    return nothingStored();
   }
 }
 
 async function loadLibrary() {
   if (!libraryAvailable) return [];
   try {
-    const db = await openDb();
+    const db = await getDb();
     const recs = await idbRequest(db.transaction(STORE).objectStore(STORE).getAll());
-    db.close();
     return recs.map(r => ({ ...r, when: r.when ? new Date(r.when) : null }));
   } catch (err) {
     console.warn('could not read library:', err);
@@ -1430,14 +1604,15 @@ async function loadLibrary() {
 }
 
 async function clearLibrary() {
-  const db = await openDb();
+  const db = await getDb();
   await new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, 'readwrite');
     tx.objectStore(STORE).clear();
     tx.oncomplete = resolve;
     tx.onerror = () => reject(tx.error);
   });
-  db.close();
+  // The records are gone, so every object URL minted from their blobs is dead.
+  revokeThumbUrls();
 }
 
 async function rebuildFromLibrary() {
@@ -1685,7 +1860,31 @@ function build() {
   sheetStats.textContent = has ? parts.join(' · ').replace(/<\/?b>/g, '') : '';
 }
 
+/* Give a click-handled div a tab stop and Enter/Space.
+
+   Not role="button": a trip header already contains a real Play button, and a
+   photo row contains its own thumbnail control, so declaring the container a
+   button would nest one control inside another and describe the markup
+   incorrectly. A tab stop and a key handler make them operable, which is the
+   part that was actually missing. The guard on e.target keeps a nested button
+   from being activated twice by one keypress. */
+function keyActivates(el, fn) {
+  el.tabIndex = 0;
+  el.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    if (e.target !== el) return;
+    e.preventDefault();
+    fn(e);
+  });
+}
+
 function renderSidebar() {
+  /* The old rows are about to be thrown away, so stop watching them. Images
+     that never scrolled into view were never unobserved, and each one holds a
+     reference to its record — and therefore its thumbnail blob. Whether an
+     observer keeps a detached target alive is left to the implementation;
+     disconnecting removes the question for the cost of one line. */
+  thumbObserver.disconnect();
   sideBody.innerHTML = '';
 
   trips.forEach((trip, i) => {
@@ -1709,12 +1908,15 @@ function renderSidebar() {
       startPlayback(trip);
     });
 
-    el.querySelector('.trip-head').addEventListener('click', () => {
-      el.classList.toggle('open');
-      if (el.classList.contains('open')) zoomTo(trip.photos);
-    });
     // Expanding a trip zooms the map to it — keep the sheet up so you can then
     // pick a day, but the map underneath has already moved.
+    const head = el.querySelector('.trip-head');
+    const toggleTrip = () => {
+      el.classList.toggle('open');
+      if (el.classList.contains('open')) zoomTo(trip.photos);
+    };
+    head.addEventListener('click', toggleTrip);
+    keyActivates(head, toggleTrip);
 
     const body = el.querySelector('.trip-body');
     trip.days.forEach(day => {
@@ -1725,9 +1927,10 @@ function renderSidebar() {
         </div>`;
       // Zooming somewhere is a request to look at the map, so the sheet gets
       // out of the way. On desktop the class is inert.
-      d.querySelector('.day-head').addEventListener('click', () => {
-        zoomTo(day.photos); closeSheet();
-      });
+      const dayHead = d.querySelector('.day-head');
+      const goToDay = () => { zoomTo(day.photos); closeSheet(); };
+      dayHead.addEventListener('click', goToDay);
+      keyActivates(dayHead, goToDay);
 
       day.photos.forEach(p => {
         const s = document.createElement('div');
@@ -1736,11 +1939,15 @@ function renderSidebar() {
         s.insertAdjacentHTML('beforeend',
           `<span class="t">${clock(p.when)}</span>
            <span class="n">${escapeHtml(p.name)}</span>`);
-        s.querySelector('.thumb').addEventListener('click', e => {
-          e.stopPropagation();          // tapping the image opens it full screen,
+        const thumb = s.querySelector('.thumb');
+        const open = e => {
+          if (e) e.stopPropagation();   // tapping the image opens it full screen,
           openViewer(p);                // tapping the row still flies to the pin
-        });
-        s.addEventListener('click', () => {
+        };
+        thumb.addEventListener('click', open);
+        keyActivates(thumb, open);
+
+        const goToPin = () => {
           const m = markerIndex.get(p);
           if (!m) return;
           // The marker may be folded inside a cluster; this expands down to it
@@ -1748,7 +1955,9 @@ function renderSidebar() {
           closeSheet();
           if (cluster) cluster.zoomToShowLayer(m, () => m.openPopup());
           else { map.setView([p.lat, p.lon], Math.max(map.getZoom(), 15)); m.openPopup(); }
-        });
+        };
+        s.addEventListener('click', goToPin);
+        keyActivates(s, goToPin);
         d.appendChild(s);
       });
       body.appendChild(d);
@@ -1789,14 +1998,36 @@ function renderSidebar() {
 }
 
 /* ---------- thumbnail display ----------
-   Object URLs are created once per photo and cached on the record. Minting one
-   per sidebar row up front would mean thousands of live URLs, so images are
-   only given a src when they scroll into view. */
+   Images are only given a src when they scroll into view — minting a URL per
+   sidebar row up front would mean thousands of live ones.
+
+   The cache is keyed on the record id, not stored on the record itself. It was
+   stored on the record, and that leaked: loadLibrary builds fresh objects out of
+   getAll on every rebuild, so each rebuild started over with an empty _url and
+   minted a second, third, fourth URL for the same photo while the earlier ones
+   stayed alive forever. Nothing revoked them. Keyed on the id, the entry
+   survives the rebuild; when the blob behind it really has changed — a preview
+   upgraded by a re-import — the old URL is revoked before the new one is made,
+   so the count stays bounded either way. */
+
+const thumbUrls = new Map();   // record id -> { blob, url }
 
 function thumbUrl(p) {
   if (!p.thumb) return null;
-  if (!p._url) p._url = URL.createObjectURL(p.thumb);
-  return p._url;
+  const id = p.id || recordId(p);
+  const hit = thumbUrls.get(id);
+  if (hit) {
+    if (hit.blob === p.thumb) return hit.url;
+    URL.revokeObjectURL(hit.url);
+  }
+  const url = URL.createObjectURL(p.thumb);
+  thumbUrls.set(id, { blob: p.thumb, url });
+  return url;
+}
+
+function revokeThumbUrls() {
+  for (const { url } of thumbUrls.values()) URL.revokeObjectURL(url);
+  thumbUrls.clear();
 }
 
 const thumbObserver = new IntersectionObserver(entries => {
@@ -2118,6 +2349,9 @@ function buildTimeline(stops) {
       const dur = weightTotal ? (weights[i-1] / weightTotal) * PLAY_TOTAL_MS : 0;
       items.push({
         type: 'travel', from: stops[i-1], to: stop, start: at, dur,
+        // Carried, not searched for later: playFrame needs the stop's position
+        // in the list sixty times a second and indexOf is a linear scan.
+        fromStop: i - 1, toStop: i,
         fromIdx: stopAt[i-1], toIdx: stopAt[i],
         d0: cum[stopAt[i-1]], d1: cum[stopAt[i]]
       });
@@ -2184,7 +2418,7 @@ function startPlayback(trip) {
     pts: timeline.pts, cum: timeline.cum, stopAt: timeline.stopAt,
     canvas, doneLine, liveLine, head,
     t: 0, speed: 1, paused: false, last: performance.now(),
-    lastPan: 0, shownIndex: -1, doneUpto: -1, photoUp: false,
+    lastPan: 0, shownIndex: -1, doneUpto: -1, photoUp: false, cursor: 0,
     total: timeline.total
   };
 
@@ -2212,9 +2446,17 @@ function playFrame(now) {
   pb.last = now;                            // doesn't jump the whole route
   if (!pb.paused) pb.t = Math.min(pb.total, pb.t + dt * pb.speed);
 
-  // Which item of the timeline are we in, and how far through it?
-  let i = pb.items.length - 1;
+  /* Which item of the timeline are we in, and how far through it?
+
+     Walked from wherever it was last frame, which is almost always the same
+     item or the next one. It used to scan backward from the final item every
+     frame — worst at the start of a long trip, which is exactly when the replay
+     has the most work still ahead of it. Both loops are here so a seek
+     backwards on the scrub bar still lands correctly. */
+  let i = Math.min(pb.cursor, pb.items.length - 1);
   while (i > 0 && pb.t < pb.items[i].start) i--;
+  while (i < pb.items.length - 1 && pb.t >= pb.items[i + 1].start) i++;
+  pb.cursor = i;
   const item = pb.items[i];
   const f = item.dur ? Math.min(1, Math.max(0, (pb.t - item.start) / item.dur)) : 1;
 
@@ -2224,7 +2466,7 @@ function playFrame(now) {
     const here = pointAtDistance(pb.pts, pb.cum, item.d0 + (item.d1 - item.d0) * f);
     lat = here[0]; lon = here[1];
     curveIdx = item.fromIdx;
-    stopIndex = pb.stops.indexOf(f > 0.5 ? item.to : item.from);
+    stopIndex = f > 0.5 ? item.toStop : item.fromStop;
     showPlayPhoto(null);
   } else {
     lat = item.stop.lat;
@@ -2310,12 +2552,20 @@ function stopPlayback() {
   clearTimeout(playback.dismiss);
   map.off('click', stopPlayback);
   playPhoto.classList.remove('on');
+  playPhoto.classList.remove('held');   // or the next replay starts ringed blue
   [playback.doneLine, playback.liveLine, playback.head, playback.canvas]
     .forEach(l => { if (l) map.removeLayer(l); });
   playback = null;
   document.body.classList.remove('playing');
   playbar.classList.remove('on');
-  build();          // puts the pins and static routes back
+
+  /* Put the pins and static routes back by re-attaching them, not by calling
+     build(). startPlayback only detached these two — build() would reconstruct
+     every marker and rerender the sidebar to arrive at the same place, and then
+     fitBounds to the whole library, throwing away the view you had just spent
+     the replay arriving at. */
+  if (cluster && !map.hasLayer(cluster)) map.addLayer(cluster);
+  layers.forEach(l => { if (!map.hasLayer(l)) l.addTo(map); });
 }
 
 playPauseB.addEventListener('click', () => {
